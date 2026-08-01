@@ -2,225 +2,204 @@ from __future__ import annotations
 
 import html
 import random
+from collections import deque
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import streamlit as st
 
 
-Location = Tuple[str, str]
+Coord = Tuple[int, int]
 Payload = Dict[str, str]
 GameState = Dict[str, Any]
 
-MAX_ROUNDS = 12
-ROOM_ORDER: List[str] = ["Observatory", "Velvet Room", "Glasshouse"]
-MOVE_DELTAS: Dict[str, Tuple[int, int]] = {
-    "north": (-1, 0),
-    "south": (1, 0),
-    "west": (0, -1),
-    "east": (0, 1),
+APP_NAME = "Cipher Clash"
+MAX_ROUNDS = 24
+MAP_WIDTH = 13
+MAP_HEIGHT = 9
+
+# A deliberately simple, readable top-down floor plan. # = wall, letters = rooms, . = corridor.
+FACILITY_MAP: List[str] = [
+    "#############",
+    "#GGG#OOO#VVV#",
+    "#GGG#...#VVV#",
+    "#GGG.....VVV#",
+    "#.....#.....#",
+    "#CCC#...#HHH#",
+    "#CCC#...#HHH#",
+    "#CCC#...#HHH#",
+    "#############",
+]
+
+ROOMS: Dict[str, Dict[str, str]] = {
+    "G": {"name": "Glasshouse", "short": "GLASS", "color": "#4be0ae"},
+    "O": {"name": "Observatory", "short": "ORBIT", "color": "#ffd166"},
+    "V": {"name": "Velvet Room", "short": "VELVET", "color": "#ff786f"},
+    "C": {"name": "Control", "short": "CONTROL", "color": "#a98cff"},
+    "H": {"name": "Archive Hall", "short": "ARCHIVE", "color": "#61b8ff"},
+    ".": {"name": "Connector", "short": "LINK", "color": "#7e8da1"},
 }
 
-ROOMS: Dict[str, Dict[str, Any]] = {
-    "Glasshouse": {
-        "eyebrow": "01 / SOUTH WING",
-        "subtitle": "orchids, mirrors, warm air",
-        "description": "A humid conservatory built around a black-water fountain. Every surface reflects twice.",
-        "accent": "#50e3bb",
-        "accent_soft": "rgba(80, 227, 187, .13)",
-        "icon": "✦",
-        "spots": [
-            {"name": "Orchid bench", "detail": "A lacquered bench beneath a bank of grow lights."},
-            {"name": "Mirror plinth", "detail": "A polished plinth displaying a tiny brass compass."},
-            {"name": "Service hatch", "detail": "A narrow hatch hidden behind a curtain of fern."},
-        ],
-    },
-    "Velvet Room": {
-        "eyebrow": "02 / WEST WING",
-        "subtitle": "records, velvet, red light",
-        "description": "A listening room with a velvet banquette and a record console still humming at 33 RPM.",
-        "accent": "#ff756c",
-        "accent_soft": "rgba(255, 117, 108, .13)",
-        "icon": "◈",
-        "spots": [
-            {"name": "Record console", "detail": "A walnut console with a needle frozen above a vinyl groove."},
-            {"name": "Drinks cabinet", "detail": "Cut crystal, tonic, and one bottle with the label peeled away."},
-            {"name": "Velvet banquette", "detail": "Deep cushions with a suspiciously sharp seam."},
-        ],
-    },
-    "Observatory": {
-        "eyebrow": "03 / NORTH WING",
-        "subtitle": "rain, brass, city lights",
-        "description": "An octagonal room under a glass dome. The storm outside makes every signal flicker.",
-        "accent": "#ffd166",
-        "accent_soft": "rgba(255, 209, 102, .13)",
-        "icon": "⌁",
-        "spots": [
-            {"name": "Telescope mount", "detail": "A brass mount aimed at a skyline that is not on any map."},
-            {"name": "Map table", "detail": "A city map pinned beneath a clear sheet of glass."},
-            {"name": "Weather console", "detail": "A quiet console pulsing with one amber warning light."},
-        ],
-    },
+DIRECTIONS: Dict[str, Coord] = {
+    "north": (0, -1),
+    "south": (0, 1),
+    "west": (-1, 0),
+    "east": (1, 0),
 }
 
-ITEMS: List[Payload] = [
-    {
-        "kind": "dossier",
-        "label": "Prism dossier",
-        "icon": "✦",
-        "detail": "The target file. Get it to the extraction lift before Rook does.",
-    },
-    {
-        "kind": "wire",
-        "label": "Wire clip",
-        "icon": "⌁",
-        "detail": "A ceramic snip tool. Disarms one rival tripwire or rigs one of your own.",
-    },
-    {
-        "kind": "smoke",
-        "label": "Smoke capsule",
-        "icon": "◌",
-        "detail": "A palm-sized escape cloud. The first bad search costs less integrity.",
-    },
-    {
-        "kind": "booster",
-        "label": "Signal booster",
-        "icon": "⌁",
-        "detail": "One burst of clean intel. Adds a second scan to your loadout.",
-    },
-    {
-        "kind": "decoy",
-        "label": "Mirror decoy",
-        "icon": "◇",
-        "detail": "A false reflection that can draw Rook into a trap.",
-    },
-    {
-        "kind": "intel",
-        "label": "Transit note",
-        "icon": "▱",
-        "detail": "A fragment of the extraction route. Worth a little momentum.",
-    },
+PLAYER_START: Coord = (2, 1)
+RIVAL_START: Coord = (10, 1)
+EXTRACTION: Coord = (6, 7)
+SEARCH_SPOTS: List[Coord] = [
+    (2, 2),
+    (2, 3),
+    (6, 1),
+    (6, 2),
+    (10, 2),
+    (10, 3),
+    (2, 5),
+    (2, 6),
+    (10, 5),
+    (10, 6),
+    (6, 5),
+    (6, 6),
+]
+
+PAYLOADS: List[Payload] = [
+    {"kind": "dossier", "label": "Prism dossier", "icon": "✦", "detail": "The encrypted file. Carry it to the extraction lift."},
+    {"kind": "wire", "label": "Wire clip", "icon": "⌁", "detail": "Rig one floor trap to stun Rook."},
+    {"kind": "smoke", "label": "Smoke capsule", "icon": "◌", "detail": "Blink two squares away from danger."},
+    {"kind": "scanner", "label": "Signal scanner", "icon": "⌁", "detail": "Gain one remote scan and briefly reveal Rook."},
+    {"kind": "decoy", "label": "Holo decoy", "icon": "◇", "detail": "Freeze Rook for one turn with a false body heat signature."},
+    {"kind": "intel", "label": "Transit intel", "icon": "▱", "detail": "Boost your score and scramble Rook's alert."},
+    {"kind": "empty", "label": "Cold cache", "icon": "·", "detail": "Dust, ozone, and nothing useful."},
+    {"kind": "empty", "label": "False lead", "icon": "·", "detail": "A convincing detail planted to waste your time."},
+    {"kind": "empty", "label": "Dead channel", "icon": "·", "detail": "No signal. Keep moving."},
+    {"kind": "empty", "label": "Empty drawer", "icon": "·", "detail": "Someone got here before you."},
+    {"kind": "empty", "label": "Cold cache", "icon": "·", "detail": "Nothing but a clean fingerprint."},
+    {"kind": "empty", "label": "False lead", "icon": "·", "detail": "The room is lying to you."},
 ]
 
 
-def escape(value: str) -> str:
-    """Escape text before placing it inside a custom HTML surface."""
-    return html.escape(value, quote=True)
+def escape(value: object) -> str:
+    """Escape dynamic text before placing it in a custom HTML surface."""
+    return html.escape(str(value), quote=True)
 
 
-def all_locations() -> List[Location]:
-    return [
-        (room_name, spot["name"])
-        for room_name, room in ROOMS.items()
-        for spot in room["spots"]
-    ]
+def tile_at(location: Coord) -> str:
+    x, y = location
+    if not (0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT):
+        return "#"
+    return FACILITY_MAP[y][x]
 
 
-def move_location(location: Location, direction: str) -> Tuple[Location, bool]:
-    """Return a neighboring location and whether the requested move is possible."""
-    if direction not in MOVE_DELTAS:
-        return location, False
-    room_name, spot_name = location
-    try:
-        room_index = ROOM_ORDER.index(room_name)
-        spot_index = ROOMS[room_name]["spots"].index({"name": spot_name, "detail": next(spot["detail"] for spot in ROOMS[room_name]["spots"] if spot["name"] == spot_name)})
-    except (ValueError, StopIteration):
-        return location, False
-    room_delta, spot_delta = MOVE_DELTAS[direction]
-    next_room_index = room_index + room_delta
-    next_spot_index = spot_index + spot_delta
-    if not (0 <= next_room_index < len(ROOM_ORDER)):
-        return location, False
-    if not (0 <= next_spot_index < len(ROOMS[ROOM_ORDER[next_room_index]]["spots"])):
-        return location, False
-    next_room = ROOM_ORDER[next_room_index]
-    next_spot = str(ROOMS[next_room]["spots"][next_spot_index]["name"])
-    return (next_room, next_spot), True
+def is_walkable(location: Coord) -> bool:
+    return tile_at(location) != "#"
 
 
-def adjacent_locations(location: Location) -> List[Location]:
-    """Return all legal movement destinations from a location."""
-    return [move_location(location, direction)[0] for direction in MOVE_DELTAS if move_location(location, direction)[1]]
+def room_name(location: Coord) -> str:
+    return ROOMS.get(tile_at(location), {"name": "Unknown"})["name"]
 
 
-def location_distance(first: Location, second: Location) -> int:
-    """Measure grid distance between two tactical locations."""
-    first_room, first_spot = first
-    second_room, second_spot = second
-    first_room_index = ROOM_ORDER.index(first_room)
-    second_room_index = ROOM_ORDER.index(second_room)
-    first_spot_index = next(index for index, spot in enumerate(ROOMS[first_room]["spots"]) if spot["name"] == first_spot)
-    second_spot_index = next(index for index, spot in enumerate(ROOMS[second_room]["spots"]) if spot["name"] == second_spot)
-    return abs(first_room_index - second_room_index) + abs(first_spot_index - second_spot_index)
+def room_short(location: Coord) -> str:
+    return ROOMS.get(tile_at(location), {"short": "UNKNOWN"})["short"]
+
+
+def neighbors(location: Coord) -> List[Coord]:
+    x, y = location
+    result: List[Coord] = []
+    for dx, dy in DIRECTIONS.values():
+        destination = (x + dx, y + dy)
+        if is_walkable(destination):
+            result.append(destination)
+    return result
+
+
+def shortest_path(start: Coord, target: Coord) -> List[Coord]:
+    """Return a shortest path excluding start and including target."""
+    if start == target:
+        return []
+    queue: deque[Tuple[Coord, List[Coord]]] = deque([(start, [])])
+    visited: Set[Coord] = {start}
+    while queue:
+        current, path = queue.popleft()
+        for destination in neighbors(current):
+            if destination in visited:
+                continue
+            next_path = [*path, destination]
+            if destination == target:
+                return next_path
+            visited.add(destination)
+            queue.append((destination, next_path))
+    return []
+
+
+def grid_distance(first: Coord, second: Coord) -> int:
+    path = shortest_path(first, second)
+    return len(path) if path else (0 if first == second else 99)
+
+
+def format_location(location: Coord) -> str:
+    return f"{room_name(location)} · {location[0] + 1},{location[1] + 1}"
 
 
 def create_game() -> GameState:
-    locations = all_locations()
-    payloads: List[Payload] = [dict(item) for item in ITEMS]
-    payloads.extend(
-        [
-            {"kind": "empty", "label": "Clean air", "icon": "·", "detail": "Nothing but dust and a faint trace of ozone."},
-            {"kind": "empty", "label": "False lead", "icon": "·", "detail": "A convincing detail planted to waste your time."},
-            {"kind": "empty", "label": "Cold surface", "icon": "·", "detail": "No signal. No heat. Keep moving."},
-        ]
-    )
+    payloads: List[Payload] = [dict(payload) for payload in PAYLOADS]
     random.shuffle(payloads)
-    hidden = {location: payloads[index] for index, location in enumerate(locations)}
-    rival_start: Location = ("Observatory", "Weather console")
-    dossier_candidates = [location for location in locations if location_distance(location, rival_start) >= 2]
-    dossier_location = next(location for location in locations if hidden[location]["kind"] == "dossier")
-    if dossier_location not in dossier_candidates:
-        replacement = random.choice(dossier_candidates)
-        hidden[dossier_location], hidden[replacement] = hidden[replacement], hidden[dossier_location]
-        dossier_location = replacement
+    hidden: Dict[Coord, Payload] = {
+        location: payload for location, payload in zip(SEARCH_SPOTS, payloads)
+    }
+    dossier_location = next(
+        location for location, payload in hidden.items() if payload["kind"] == "dossier"
+    )
     return {
         "round": 1,
         "score": 0,
-        "momentum": 0,
         "integrity": 3,
-        "clue_tokens": 1,
+        "scans": 2,
+        "player": PLAYER_START,
+        "rival": RIVAL_START,
+        "dossier_location": dossier_location,
+        "hidden": hidden,
         "searched": set(),
         "rival_searched": set(),
-        "hidden": hidden,
-        "dossier_location": dossier_location,
-        "traps": {},
         "inventory": [],
+        "traps": {},
         "clues": [],
         "feed": [
-            {"message": "Mission clock live. Rook is already inside the suite.", "kind": "system"},
-            {"message": "Find the Prism dossier. Leave no clean angles.", "kind": "objective"},
+            {"message": "Arena live. Find the Prism dossier and reach the extraction lift.", "tone": "system"},
+            {"message": "You move first. Rook moves after every action.", "tone": "player"},
         ],
-        "selected_room": "Glasshouse",
-        "player_location": ("Glasshouse", "Orchid bench"),
-        "rival_location": ("Observatory", "Weather console"),
-        "player_steps": 0,
-        "rival_steps": 0,
+        "last_action": "Your move. Pick a direction or search the tile you occupy.",
+        "player_history": [PLAYER_START],
+        "rival_history": [RIVAL_START],
+        "rival_last_seen": RIVAL_START,
+        "player_last_seen": PLAYER_START,
+        "rival_visible_until": 0,
+        "rival_stunned": 0,
+        "carrying": False,
         "game_over": False,
         "result": None,
-        "rival_progress": 0,
-        "rival_alert": 1,
-        "last_action": "Choose a wing and search a location.",
     }
 
 
 def ensure_game() -> GameState:
-    required_keys = {"player_location", "rival_location", "player_steps", "rival_steps"}
-    if "game" not in st.session_state or not required_keys.issubset(st.session_state.game.keys()):
+    if "game" not in st.session_state:
         st.session_state.game = create_game()
     return cast(GameState, st.session_state.game)
 
 
-def add_feed(game: GameState, message: str, kind: str = "neutral") -> None:
+def add_feed(game: GameState, message: str, tone: str = "neutral") -> None:
     feed: List[Dict[str, str]] = game["feed"]
-    game["feed"] = [{"message": message, "kind": kind}, *feed][:9]
+    game["feed"] = [{"message": message, "tone": tone}, *feed][:10]
 
 
-def flash(game: GameState, message: str, kind: str = "neutral") -> None:
+def flash(game: GameState, message: str, tone: str = "neutral") -> None:
     game["last_action"] = message
-    add_feed(game, message, kind)
+    add_feed(game, message, tone)
 
 
 def has_item(game: GameState, label: str) -> bool:
-    return label in game["inventory"]
+    return label in cast(List[str], game["inventory"])
 
 
 def end_game(game: GameState, title: str, detail: str, won: bool) -> None:
@@ -229,615 +208,477 @@ def end_game(game: GameState, title: str, detail: str, won: bool) -> None:
     flash(game, detail, "success" if won else "danger")
 
 
-def move_player(game: GameState, direction: str) -> None:
-    """Move the player one tactical square, then give Rook his response."""
-    if game["game_over"]:
+def update_visibility(game: GameState) -> None:
+    player = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    if grid_distance(player, rival) <= 4 or game["round"] <= int(game["rival_visible_until"]):
+        game["rival_last_seen"] = rival
+        game["player_last_seen"] = player
+
+
+def check_extraction(game: GameState) -> bool:
+    if bool(game["carrying"]) and cast(Coord, game["player"]) == EXTRACTION:
+        game["score"] += 100
+        end_game(
+            game,
+            "Clean extraction",
+            "The Prism dossier is out of the facility. Rook is left chasing a reflection.",
+            True,
+        )
+        return True
+    return False
+
+
+def resolve_contact(game: GameState) -> None:
+    """Make contact costly, but leave the player a route to recover."""
+    game["integrity"] -= 1
+    game["score"] = max(0, int(game["score"]) - 10)
+    game["rival_stunned"] = 1
+    flash(game, "ROOK CONTACT. Integrity -1. You forced him back through the corridor.", "danger")
+    if int(game["integrity"]) <= 0:
+        end_game(game, "Burned in the arena", "Rook boxed every exit. The operation is compromised.", False)
         return
-    current = cast(Location, game["player_location"])
-    destination, can_move = move_location(current, direction)
-    if not can_move:
-        flash(game, "That route is blocked. Try another direction.", "warning")
-        return
-    game["player_location"] = destination
-    game["player_steps"] += 1
-    game["selected_room"] = destination[0]
-    room_name, spot_name = destination
-    flash(game, f"You moved into {room_name} — {spot_name}.", "player")
-    finish_player_action(game)
+    rival = cast(Coord, game["rival"])
+    player = cast(Coord, game["player"])
+    escape_tiles = [tile for tile in neighbors(rival) if tile != player]
+    if escape_tiles:
+        game["rival"] = max(escape_tiles, key=lambda tile: grid_distance(tile, player))
 
 
 def resolve_rival_turn(game: GameState) -> None:
-    """Move Rook toward the dossier, with enough randomness to keep him unpredictable."""
+    """Give Rook one readable but dangerous AI move after the player's action."""
     if game["game_over"]:
         return
+    if int(game["rival_stunned"]) > 0:
+        game["rival_stunned"] = int(game["rival_stunned"]) - 1
+        add_feed(game, "Rook is frozen by the false heat signature.", "success")
+        return
 
-    current = cast(Location, game["rival_location"])
-    candidates = adjacent_locations(current)
-    if candidates:
-        target = cast(Location, game["dossier_location"])
-        if random.random() < 0.68:
-            destination = min(candidates, key=lambda location: location_distance(location, target))
-        else:
-            destination = random.choice(candidates)
-        game["rival_location"] = destination
-        game["rival_steps"] += 1
+    rival = cast(Coord, game["rival"])
+    player = cast(Coord, game["player"])
+    target = player if bool(game["carrying"]) else cast(Coord, game["dossier_location"])
+    path = shortest_path(rival, target)
+    candidates = neighbors(rival)
+    if path:
+        preferred = path[0]
+        alternatives = [tile for tile in candidates if grid_distance(tile, target) == grid_distance(preferred, target)]
+        destination = random.choice(alternatives or [preferred])
+    elif candidates:
+        destination = random.choice(candidates)
     else:
-        destination = current
+        destination = rival
 
-    room_name, spot_name = destination
-    add_feed(game, f"Rook moved through {room_name} and reached {spot_name}.", "rival")
-
-    if destination == cast(Location, game["player_location"]):
-        game["rival_alert"] = min(5, game["rival_alert"] + 1)
-        game["momentum"] = max(0, game["momentum"] - 8)
-        add_feed(game, "Close encounter. You broke line of sight before Rook could pin you down.", "danger")
-
-    if game["traps"].get(destination) == "player":
+    if destination in game["traps"]:
         game["traps"].pop(destination, None)
-        game["score"] += 5
-        game["momentum"] = min(100, game["momentum"] + 14)
-        add_feed(game, f"Rook hit your tripwire in {room_name}. Clean work, operative.", "success")
+        game["rival"] = destination
+        game["rival_stunned"] = 2
+        game["score"] += 15
+        flash(game, f"Rook hit your tripwire in {room_name(destination)}. He is stunned for two turns.", "success")
         return
 
-    if destination in game["rival_searched"]:
-        return
+    game["rival"] = destination
+    game["rival_history"].append(destination)
+    if grid_distance(cast(Coord, game["player"]), destination) <= 4:
+        game["rival_last_seen"] = destination
+        game["player_last_seen"] = cast(Coord, game["player"])
+        add_feed(game, f"Rook signal: {room_short(destination)} / tile {destination[0] + 1},{destination[1] + 1}.", "rival")
+    else:
+        add_feed(game, f"Rook moved toward the dossier through {room_name(destination)}.", "rival")
 
-    game["rival_searched"].add(destination)
-    payload: Payload = game["hidden"][destination]
-    if payload["kind"] == "dossier":
-        game["rival_progress"] = 100
+    if destination == cast(Coord, game["player"]):
+        resolve_contact(game)
+        return
+    if destination == cast(Coord, game["dossier_location"]) and not bool(game["carrying"]):
         end_game(
             game,
-            "Rook got there first",
-            "The Prism dossier vanished into the rain. Reset the operation and change your route.",
+            "Rook secured the dossier",
+            "He reached the hidden cache first. Reset the arena and change your route.",
             False,
         )
-    elif payload["kind"] != "empty":
-        game["rival_progress"] = min(92, game["rival_progress"] + random.randint(7, 16))
-        add_feed(game, f"Rook searched {spot_name}. His signal moved north.", "rival")
-    else:
-        add_feed(game, f"Rook searched {spot_name} and came up empty.", "neutral")
 
 
-def finish_player_action(game: GameState) -> None:
+def finish_turn(game: GameState) -> None:
     if game["game_over"]:
         return
     resolve_rival_turn(game)
     if game["game_over"]:
         return
-    game["round"] += 1
-    if game["round"] > MAX_ROUNDS:
+    update_visibility(game)
+    game["round"] = int(game["round"]) + 1
+    if check_extraction(game):
+        return
+    if int(game["round"]) > MAX_ROUNDS:
         end_game(
             game,
-            "The window closed",
-            "The extraction lift locked down before either operative had a clean exit.",
+            "The arena sealed",
+            "The extraction window closed before you could get the dossier out.",
             False,
         )
 
 
-def resolve_trap(game: GameState, location: Location) -> bool:
-    if game["traps"].get(location) != "rival":
-        return True
-
-    game["traps"].pop(location, None)
-    if has_item(game, "Wire clip"):
-        game["inventory"].remove("Wire clip")
-        game["score"] += 4
-        game["momentum"] = min(100, game["momentum"] + 11)
-        flash(game, "Tripwire disarmed. Your wire clip is spent.", "success")
-        return True
-
-    if has_item(game, "Smoke capsule"):
-        game["inventory"].remove("Smoke capsule")
-        game["score"] += 1
-        flash(game, "The trap snapped. Your smoke capsule covered the escape.", "warning")
-        return True
-
-    game["integrity"] -= 1
-    game["score"] = max(0, game["score"] - 3)
-    flash(game, "Tripwire hit. Integrity -1. Rook knows you are close.", "danger")
-    game["rival_alert"] = min(5, game["rival_alert"] + 1)
-    if game["integrity"] <= 0:
-        end_game(game, "Compromised in the suite", "Three alarms. One careless angle too many.", False)
-        return False
-    return True
-
-
-def search_location(game: GameState, room_name: str, spot_name: str) -> None:
+def move_player(game: GameState, direction: str) -> None:
     if game["game_over"]:
         return
-    location = (room_name, spot_name)
-    if location != cast(Location, game["player_location"]):
-        flash(game, "Move onto this angle before searching it.", "warning")
+    delta = DIRECTIONS[direction]
+    current = cast(Coord, game["player"])
+    destination = (current[0] + delta[0], current[1] + delta[1])
+    if not is_walkable(destination):
+        flash(game, "Wall ahead. Choose another route through the facility.", "warning")
         return
+    game["player"] = destination
+    game["player_history"].append(destination)
+    game["score"] += 1
+    update_visibility(game)
+    if destination == cast(Coord, game["rival"]):
+        resolve_contact(game)
+        return
+    if check_extraction(game):
+        return
+    flash(game, f"Moved {direction}. You are in {room_name(destination)}.", "player")
+    finish_turn(game)
+
+
+def search_current(game: GameState) -> None:
+    if game["game_over"]:
+        return
+    location = cast(Coord, game["player"])
     if location in game["searched"]:
+        flash(game, "That tile is already clear. Move to another cache marker.", "warning")
         return
-
     game["searched"].add(location)
-    payload: Payload = game["hidden"][location]
-    add_feed(game, f"You searched {spot_name} in {room_name}.", "player")
-    if not resolve_trap(game, location):
-        return
-
-    if payload["kind"] == "dossier":
-        game["score"] += 50
-        game["momentum"] = 100
-        end_game(
-            game,
-            "Prism dossier secured",
-            "You found the file before Rook could close the suite. Get to extraction.",
-            True,
-        )
-        return
-
-    if payload["kind"] == "empty":
-        flash(game, f"{payload['label']} — the angle is cold.", "neutral")
+    payload: Payload = game["hidden"].get(
+        location,
+        {"kind": "empty", "label": "Open floor", "icon": "·", "detail": "No cache here."},
+    )
+    kind = payload["kind"]
+    if kind == "dossier":
+        game["carrying"] = True
+        game["score"] += 60
+        flash(game, "DOSSIER FOUND. Reach the cyan extraction lift before Rook catches you.", "success")
+        add_feed(game, "Objective changed: carry the dossier to EXTRACTION.", "objective")
+        game["rival_visible_until"] = int(game["round"]) + 2
+    elif kind == "empty":
+        flash(game, f"Searched {room_name(location)}. {payload['label']} — keep moving.", "neutral")
     else:
-        label = payload["label"]
-        game["inventory"].append(label)
-        game["score"] += 8 if payload["kind"] != "intel" else 5
-        game["momentum"] = min(100, game["momentum"] + 12)
-        flash(game, f"Recovered: {label}.", "success")
-        if payload["kind"] == "booster":
-            game["clue_tokens"] += 1
-            add_feed(game, "Signal booster charged. You have one extra scan.", "success")
-        if payload["kind"] == "intel":
-            game["rival_alert"] = max(1, game["rival_alert"] - 1)
-            add_feed(game, "Transit note acquired. Rook's read on the suite just got fuzzier.", "success")
-
-    finish_player_action(game)
+        game["inventory"].append(payload["label"])
+        game["score"] += 10
+        flash(game, f"Recovered {payload['icon']} {payload['label']}.", "success")
+        if kind == "scanner":
+            game["scans"] += 1
+        if kind == "intel":
+            game["score"] += 10
+            game["rival_visible_until"] = max(0, int(game["rival_visible_until"]) - 1)
+            add_feed(game, "Transit intel scrambled Rook's route and boosted your score.", "success")
+    finish_turn(game)
 
 
-def scout_room(game: GameState, room_name: str) -> None:
-    if game["game_over"] or game["clue_tokens"] <= 0:
+def scan_area(game: GameState) -> None:
+    if game["game_over"] or int(game["scans"]) <= 0:
         return
-    if cast(Location, game["player_location"])[0] != room_name:
-        flash(game, "Move into this wing before scanning it.", "warning")
-        return
-    game["clue_tokens"] -= 1
-    possible = [
-        location
-        for location in all_locations()
-        if location[0] == room_name
-        and location not in game["searched"]
-        and game["hidden"][location]["kind"] in {"dossier", "wire", "booster", "intel", "decoy"}
-    ]
-    if possible:
-        room, spot = random.choice(possible)
-        game["clues"].insert(0, f"{room}: a clean signal is strongest near {spot}.")
-        flash(game, f"Scan complete. Something useful is close to {spot}.", "success")
+    game["scans"] = int(game["scans"]) - 1
+    current = cast(Coord, game["player"])
+    unsearched = [spot for spot in SEARCH_SPOTS if spot not in game["searched"]]
+    nearest = min(unsearched, key=lambda spot: grid_distance(current, spot), default=None)
+    game["rival_visible_until"] = int(game["round"]) + 3
+    if nearest is not None:
+        game["clues"].insert(0, f"SCAN: strongest cache signal at {room_short(nearest)} / tile {nearest[0] + 1},{nearest[1] + 1}.")
+        flash(game, f"Scan complete. Cache signal strongest in {room_name(nearest)}.", "success")
     else:
-        game["clues"].insert(0, f"{room_name}: only dead surfaces and false heat.")
-        flash(game, f"Scan complete. {room_name} is mostly cold.", "warning")
-    finish_player_action(game)
+        flash(game, "Scan complete. Every cache has already been cleared.", "warning")
+    finish_turn(game)
 
 
-def rig_trap(game: GameState, room_name: str, spot_name: str) -> None:
+def rig_trap(game: GameState) -> None:
     if game["game_over"] or not has_item(game, "Wire clip"):
         return
-    location = (room_name, spot_name)
-    if location != cast(Location, game["player_location"]):
-        flash(game, "You can only rig the angle you occupy.", "warning")
-        return
-    if location in game["searched"] or location in game["traps"]:
+    location = cast(Coord, game["player"])
+    if location == EXTRACTION or location in game["traps"]:
+        flash(game, "This tile cannot take another trap.", "warning")
         return
     game["inventory"].remove("Wire clip")
     game["traps"][location] = "player"
-    game["score"] += 2
-    flash(game, f"Tripwire rigged at {spot_name}. Let Rook do the walking.", "success")
-    finish_player_action(game)
+    game["score"] += 5
+    flash(game, f"Tripwire armed in {room_name(location)}. Let Rook do the walking.", "success")
+    finish_turn(game)
 
 
-def select_room(room_name: str) -> None:
-    game = ensure_game()
-    game["selected_room"] = room_name
-    st.rerun()
+def use_smoke(game: GameState) -> None:
+    if game["game_over"] or not has_item(game, "Smoke capsule"):
+        return
+    current = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    first_steps = [tile for tile in neighbors(current) if tile != rival]
+    if not first_steps:
+        flash(game, "No clear smoke route from this tile.", "warning")
+        return
+    destination = max(first_steps, key=lambda tile: grid_distance(tile, rival))
+    second_steps = [tile for tile in neighbors(destination) if tile != rival]
+    if second_steps:
+        destination = max(second_steps, key=lambda tile: grid_distance(tile, rival))
+    game["inventory"].remove("Smoke capsule")
+    game["player"] = destination
+    game["player_history"].append(destination)
+    game["score"] += 8
+    game["rival_visible_until"] = int(game["round"]) + 1
+    flash(game, f"Smoke escape: you blinked to {room_name(destination)}.", "success")
+    finish_turn(game)
+
+
+def use_decoy(game: GameState) -> None:
+    if game["game_over"] or not has_item(game, "Holo decoy"):
+        return
+    game["inventory"].remove("Holo decoy")
+    game["rival_stunned"] = 1
+    game["score"] += 7
+    flash(game, "Holo decoy deployed. Rook is chasing a false body heat signature.", "success")
+    finish_turn(game)
+
+
+def reset_game() -> None:
+    st.session_state.game = create_game()
 
 
 def render_styles() -> None:
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-        :root {
-            --ink: #f4f7fb;
-            --muted: #9aa8bb;
-            --panel: rgba(19, 28, 47, .82);
-            --panel-strong: #172239;
-            --line: rgba(168, 191, 219, .16);
-            --cyan: #50e3bb;
-            --coral: #ff756c;
-            --gold: #ffd166;
-            --navy: #080d19;
-        }
-        .stApp {
-            background:
-                radial-gradient(circle at 10% 0%, rgba(80, 227, 187, .11), transparent 28rem),
-                radial-gradient(circle at 92% 5%, rgba(255, 117, 108, .10), transparent 30rem),
-                linear-gradient(145deg, #080d19 0%, #0d1526 52%, #09101f 100%);
-            color: var(--ink);
-            font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
-        }
-        [data-testid="stHeader"] { background: transparent; }
-        [data-testid="stToolbar"] { visibility: hidden; }
-        .block-container { max-width: 1450px; padding: 2.25rem 3rem 4rem; }
-        .brand-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom: 1.7rem; }
-        .brand-left { display:flex; align-items:center; gap:.8rem; }
-        .brand-mark { width:42px; height:42px; display:grid; place-items:center; border-radius:14px; color:#07121d; background:linear-gradient(135deg, #50e3bb, #90f4d6); font-size:1.45rem; font-weight:800; box-shadow:0 0 30px rgba(80,227,187,.24); }
-        .brand-name { color:var(--ink); font-size:1.02rem; letter-spacing:.18em; font-weight:800; text-transform:uppercase; }
-        .brand-sub { color:var(--muted); font-family:'DM Mono', monospace; font-size:.68rem; letter-spacing:.08em; margin-top:.2rem; }
-        .status-pill { display:inline-flex; align-items:center; gap:.5rem; border:1px solid rgba(80,227,187,.28); color:#96f4dc; background:rgba(80,227,187,.07); padding:.55rem .8rem; border-radius:999px; font-family:'DM Mono',monospace; font-size:.65rem; letter-spacing:.08em; }
-        .status-dot { width:7px; height:7px; border-radius:50%; background:#50e3bb; box-shadow:0 0 10px #50e3bb; }
-        .hero { display:flex; justify-content:space-between; align-items:flex-end; gap:2rem; padding:1.4rem 0 1.7rem; border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin-bottom:1.2rem; }
-        .hero-kicker { color:var(--cyan); font-family:'DM Mono', monospace; font-size:.7rem; letter-spacing:.14em; text-transform:uppercase; margin-bottom:.7rem; }
-        .hero-title { font-size:clamp(2.4rem, 5.3vw, 5.5rem); line-height:.94; letter-spacing:-.075em; font-weight:800; margin:0; color:#f7fafc; }
-        .hero-title span { color:var(--coral); }
-        .hero-copy { color:var(--muted); max-width:29rem; font-size:.94rem; line-height:1.65; margin:0; }
-        .metric-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:.7rem; margin:1.1rem 0 1.4rem; }
-        .metric { min-height:86px; background:rgba(18, 29, 49, .68); border:1px solid var(--line); border-radius:17px; padding:1rem 1.05rem; position:relative; overflow:hidden; }
-        .metric:after { content:''; position:absolute; width:90px; height:90px; right:-35px; top:-42px; border-radius:50%; border:1px solid rgba(80,227,187,.17); }
-        .metric-label { color:#8190a4; font-family:'DM Mono',monospace; font-size:.63rem; letter-spacing:.11em; text-transform:uppercase; }
-        .metric-value { color:#f6f8fc; font-size:1.65rem; font-weight:800; letter-spacing:-.05em; margin-top:.25rem; }
-        .metric-value.cyan { color:var(--cyan); }
-        .metric-value.coral { color:var(--coral); }
-        .metric-value.gold { color:var(--gold); }
-        .section-label { display:flex; justify-content:space-between; align-items:center; color:#8b9ab1; font-family:'DM Mono',monospace; font-size:.67rem; letter-spacing:.12em; text-transform:uppercase; margin: .35rem 0 .65rem; }
-        .section-label strong { color:#eef4f8; font-weight:500; }
-        .map-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:.72rem; margin-bottom:1.05rem; }
-        .room-card { border-radius:19px; border:1px solid var(--line); min-height:160px; padding:1rem; position:relative; overflow:hidden; background:linear-gradient(145deg, rgba(25,37,59,.9), rgba(15,23,40,.72)); }
-        .room-card.selected { border-color:rgba(80,227,187,.7); box-shadow:0 0 0 1px rgba(80,227,187,.12), 0 16px 42px rgba(0,0,0,.16); }
-        .room-card .room-glow { position:absolute; width:135px; height:135px; border-radius:50%; top:-60px; right:-35px; opacity:.13; filter:blur(1px); }
-        .room-icon { font-size:1.35rem; font-weight:800; position:relative; }
-        .room-eyebrow { color:#8d9bb0; font-family:'DM Mono',monospace; font-size:.6rem; letter-spacing:.07em; margin-top:.85rem; }
-        .room-name { color:#f4f7fb; font-size:1.03rem; font-weight:800; letter-spacing:-.03em; margin:.3rem 0 .16rem; }
-        .room-subtitle { color:#94a2b4; font-size:.71rem; line-height:1.4; }
-        .room-progress { color:#6f8197; font-family:'DM Mono',monospace; font-size:.61rem; position:absolute; bottom:1rem; left:1rem; }
-        .room-panel { border:1px solid var(--line); background:rgba(17,27,46,.68); border-radius:22px; padding:1.2rem; margin-bottom:1.2rem; }
-        .room-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:1rem; }
-        .room-panel-title { color:#f4f7fb; font-size:1.45rem; font-weight:800; letter-spacing:-.045em; }
-        .room-panel-copy { color:#93a1b4; font-size:.78rem; line-height:1.5; max-width:31rem; margin-top:.25rem; }
-        .scan-chip { color:#07151a; background:var(--gold); border-radius:999px; padding:.42rem .7rem; font-family:'DM Mono',monospace; font-size:.62rem; white-space:nowrap; }
-        .spot-row { display:grid; grid-template-columns:1fr auto; align-items:center; gap:.75rem; border-top:1px solid rgba(168,191,219,.11); padding:.9rem 0 .25rem; }
-        .spot-name { color:#e7edf5; font-size:.84rem; font-weight:700; }
-        .spot-detail { color:#7f90a6; font-size:.7rem; line-height:1.45; margin-top:.23rem; }
-        .spot-status { color:var(--cyan); font-family:'DM Mono',monospace; font-size:.6rem; letter-spacing:.08em; text-transform:uppercase; }
-        .side-card { border:1px solid var(--line); background:rgba(17,27,46,.68); border-radius:22px; padding:1.2rem; margin-bottom:1rem; }
-        .side-card.rival { background:linear-gradient(145deg, rgba(54,26,43,.73), rgba(20,27,46,.73)); }
-        .agent-row { display:flex; align-items:center; gap:.8rem; }
-        .agent-avatar { width:44px; height:44px; display:grid; place-items:center; border-radius:15px; color:#180e16; background:linear-gradient(135deg,#ff756c,#ffb087); font-size:1.3rem; font-weight:800; }
-        .agent-name { color:#f6f8fc; font-size:.96rem; font-weight:800; }
-        .agent-role { color:#a98b9c; font-family:'DM Mono',monospace; font-size:.6rem; letter-spacing:.09em; margin-top:.22rem; }
-        .progress-shell { height:6px; background:rgba(214,226,237,.12); border-radius:999px; overflow:hidden; margin-top:1rem; }
-        .progress-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#ff756c,#ffd166); box-shadow:0 0 13px rgba(255,117,108,.45); }
-        .loadout { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:.8rem; }
-        .loadout-chip { color:#cdd8e4; border:1px solid rgba(168,191,219,.16); background:rgba(168,191,219,.07); padding:.43rem .58rem; border-radius:9px; font-family:'DM Mono',monospace; font-size:.61rem; }
-        .loadout-chip.hot { color:#071b19; background:var(--cyan); border-color:var(--cyan); }
-        .feed-item { display:flex; gap:.65rem; padding:.68rem 0; border-bottom:1px solid rgba(168,191,219,.09); }
-        .feed-item:last-child { border-bottom:0; }
-        .feed-dot { flex:0 0 auto; width:6px; height:6px; margin-top:.4rem; border-radius:50%; background:#708098; }
-        .feed-dot.success { background:var(--cyan); box-shadow:0 0 10px rgba(80,227,187,.65); }
-        .feed-dot.danger { background:var(--coral); box-shadow:0 0 10px rgba(255,117,108,.45); }
-        .feed-dot.rival { background:var(--gold); }
-        .feed-message { color:#aab7c8; font-size:.71rem; line-height:1.45; }
-        .clue { color:#0d1b20; background:rgba(80,227,187,.93); border-radius:11px; padding:.65rem .72rem; font-family:'DM Mono',monospace; font-size:.63rem; line-height:1.5; margin-top:.55rem; }
-        .flash { border-radius:13px; padding:.8rem .9rem; font-size:.78rem; margin:0 0 1rem; border:1px solid rgba(80,227,187,.27); color:#bdf7e9; background:rgba(80,227,187,.08); }
-        .flash.warning { color:#ffe5a0; border-color:rgba(255,209,102,.27); background:rgba(255,209,102,.08); }
-        .flash.danger { color:#ffc4c0; border-color:rgba(255,117,108,.3); background:rgba(255,117,108,.08); }
-        .result-card { border:1px solid rgba(80,227,187,.38); background:linear-gradient(135deg,rgba(80,227,187,.16),rgba(19,31,49,.73)); border-radius:23px; padding:1.2rem 1.3rem; margin-bottom:1rem; }
-        .result-card.loss { border-color:rgba(255,117,108,.38); background:linear-gradient(135deg,rgba(255,117,108,.13),rgba(31,24,44,.73)); }
-        .result-kicker { color:var(--cyan); font-family:'DM Mono',monospace; font-size:.63rem; letter-spacing:.12em; text-transform:uppercase; }
-        .result-card.loss .result-kicker { color:var(--coral); }
-        .result-title { color:#f7fafc; font-weight:800; font-size:1.45rem; letter-spacing:-.05em; margin:.28rem 0 .3rem; }
-        .result-copy { color:#a9b7c8; font-size:.78rem; line-height:1.5; }
-        .duel-section { margin:1.45rem 0 1.25rem; }
-        .duel-intro { display:flex; align-items:flex-end; justify-content:space-between; gap:1rem; margin-bottom:.7rem; }
-        .duel-title { color:#f4f7fb; font-size:1.32rem; font-weight:800; letter-spacing:-.045em; }
-        .duel-copy { color:#8292a7; font-size:.72rem; line-height:1.45; max-width:28rem; text-align:right; }
-        .duel-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem; }
-        .duel-screen { border:1px solid rgba(168,191,219,.18); border-radius:22px; padding:1rem; background:linear-gradient(145deg,rgba(19,31,52,.92),rgba(11,18,32,.88)); box-shadow:0 18px 44px rgba(0,0,0,.13); }
-        .duel-screen.player-screen { border-color:rgba(80,227,187,.28); }
-        .duel-screen.rival-screen { border-color:rgba(255,117,108,.28); background:linear-gradient(145deg,rgba(47,27,45,.9),rgba(17,20,35,.88)); }
-        .screen-head { display:flex; align-items:center; justify-content:space-between; gap:.7rem; margin-bottom:.75rem; }
-        .screen-kicker { color:#50e3bb; font-family:'DM Mono',monospace; font-size:.61rem; letter-spacing:.12em; text-transform:uppercase; }
-        .rival-screen .screen-kicker { color:#ff938a; }
-        .screen-state { color:#7f90a6; font-family:'DM Mono',monospace; font-size:.58rem; letter-spacing:.07em; text-transform:uppercase; }
-        .screen-location { color:#edf5f7; font-size:.8rem; font-weight:700; margin:-.2rem 0 .75rem; }
-        .screen-board { border:1px solid rgba(168,191,219,.12); border-radius:15px; overflow:hidden; background:rgba(4,9,18,.42); }
-        .screen-row { display:grid; grid-template-columns:82px repeat(3,1fr); min-height:65px; }
-        .screen-row + .screen-row { border-top:1px solid rgba(168,191,219,.1); }
-        .screen-wing { display:flex; flex-direction:column; justify-content:center; padding:.45rem; background:rgba(168,191,219,.035); border-right:1px solid rgba(168,191,219,.1); }
-        .screen-wing-name { color:#dce7ef; font-size:.62rem; font-weight:700; line-height:1.2; }
-        .screen-wing-code { color:#687990; font-family:'DM Mono',monospace; font-size:.48rem; letter-spacing:.08em; margin-top:.25rem; }
-        .screen-cell { position:relative; display:flex; flex-direction:column; justify-content:center; min-width:0; padding:.4rem .3rem; background:rgba(168,191,219,.018); }
-        .screen-cell + .screen-cell { border-left:1px solid rgba(168,191,219,.08); }
-        .screen-cell.active { background:rgba(80,227,187,.08); }
-        .rival-screen .screen-cell.active { background:rgba(255,117,108,.08); }
-        .cell-label { color:#7f90a6; font-family:'DM Mono',monospace; font-size:.49rem; line-height:1.1; text-align:center; white-space:normal; }
-        .screen-token-row { display:flex; flex-wrap:wrap; justify-content:center; gap:.2rem; margin-top:.3rem; min-height:14px; }
-        .screen-token { display:inline-flex; align-items:center; justify-content:center; padding:.18rem .3rem; border-radius:5px; font-family:'DM Mono',monospace; font-size:.48rem; font-weight:700; letter-spacing:.03em; }
-        .screen-token.you { color:#051b19; background:#50e3bb; box-shadow:0 0 12px rgba(80,227,187,.38); }
-        .screen-token.rook { color:#271217; background:#ff756c; box-shadow:0 0 12px rgba(255,117,108,.3); }
-        .screen-token.ghost { opacity:.58; }
-        .screen-legend { display:flex; justify-content:space-between; gap:.5rem; color:#718198; font-family:'DM Mono',monospace; font-size:.55rem; margin-top:.65rem; }
-        .screen-legend strong { color:#d8e6ec; font-weight:500; }
-        .movement-label { color:#8d9db0; font-family:'DM Mono',monospace; font-size:.59rem; letter-spacing:.11em; text-transform:uppercase; text-align:center; margin:.9rem 0 .45rem; }
-        .movement-pad { display:grid; grid-template-columns:repeat(4,1fr); gap:.4rem; }
-        .movement-pad .stButton > button { min-height:44px; border-color:rgba(80,227,187,.2); background:rgba(80,227,187,.06); }
-        .movement-pad .stButton > button:hover { background:rgba(80,227,187,.15); }
-        .move-hint { color:#718198; font-family:'DM Mono',monospace; font-size:.56rem; line-height:1.4; text-align:center; margin-top:.5rem; }
-        .position-callout { border:1px solid rgba(80,227,187,.18); border-radius:13px; background:rgba(80,227,187,.055); color:#a9f0dd; font-family:'DM Mono',monospace; font-size:.6rem; line-height:1.45; padding:.6rem .7rem; margin-top:.7rem; }
-        .rival-callout { border-color:rgba(255,117,108,.2); background:rgba(255,117,108,.055); color:#ffc4c0; }
-        .footer-line { color:#566a83; font-family:'DM Mono',monospace; font-size:.61rem; letter-spacing:.07em; text-align:center; padding:1.1rem 0 0; }
-        .stButton > button { min-height:40px; border-radius:11px; border:1px solid rgba(168,191,219,.19); background:rgba(137,158,185,.08); color:#dce6ef; font-family:'DM Mono',monospace; font-size:.63rem; letter-spacing:.06em; transition:all .18s ease; }
-        .stButton > button:hover { border-color:rgba(80,227,187,.62); color:#baf7e8; background:rgba(80,227,187,.09); transform:translateY(-1px); }
-        .stButton > button:disabled { opacity:.45; color:#8090a4; border-color:rgba(168,191,219,.1); }
-        div[data-testid="stSidebar"] { background:rgba(8,13,25,.84); border-right:1px solid rgba(168,191,219,.13); }
-        div[data-testid="stSidebar"] .block-container { padding:2rem 1.2rem; }
-        @media (max-width: 850px) {
-            .block-container { padding:1.3rem 1rem 3rem; }
-            .hero { display:block; }
-            .hero-copy { margin-top:1rem; }
-            .metric-grid { grid-template-columns:repeat(2,1fr); }
-            .map-grid { grid-template-columns:1fr; }
-            .duel-grid { grid-template-columns:1fr; }
-            .duel-intro { display:block; }
-            .duel-copy { text-align:left; margin-top:.55rem; }
-            .screen-row { grid-template-columns:72px repeat(3,1fr); }
-        }
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap');
+        :root { --bg:#080b12; --panel:#111825; --line:rgba(198,218,238,.15); --text:#f4f7fb; --muted:#8592a5; --cyan:#4be0ae; --red:#ff786f; --gold:#ffd166; --blue:#61b8ff; }
+        .stApp { background:radial-gradient(circle at 10% -10%,rgba(75,224,174,.12),transparent 28rem),radial-gradient(circle at 100% 0%,rgba(255,120,111,.1),transparent 25rem),linear-gradient(145deg,#080b12,#0e1420 55%,#090d16); color:var(--text); font-family:'Manrope',system-ui,sans-serif; }
+        [data-testid="stHeader"] { background:transparent; } [data-testid="stToolbar"] { visibility:hidden; }
+        .block-container { max-width:1480px; padding:1.6rem 2.4rem 4rem; }
+        div[data-testid="stSidebar"] { background:rgba(6,9,16,.9); border-right:1px solid var(--line); } div[data-testid="stSidebar"] .block-container { padding:1.5rem 1rem; }
+        .topbar { display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1.1rem; }
+        .brand { display:flex; align-items:center; gap:.7rem; } .brand-mark { width:42px; height:42px; display:grid; place-items:center; border-radius:14px; color:#061712; font-weight:800; font-size:1.25rem; background:linear-gradient(135deg,#4be0ae,#b1ffe4); box-shadow:0 0 30px rgba(75,224,174,.22); }
+        .brand-name { color:#f6fafc; text-transform:uppercase; letter-spacing:.16em; font-weight:800; font-size:.9rem; } .brand-sub { color:#76859a; font:500 .61rem 'DM Mono',monospace; letter-spacing:.11em; margin-top:.18rem; }
+        .live-pill { color:#a9f5dc; border:1px solid rgba(75,224,174,.3); background:rgba(75,224,174,.07); padding:.55rem .75rem; border-radius:99px; font:500 .6rem 'DM Mono',monospace; letter-spacing:.1em; } .live-dot { display:inline-block; width:7px; height:7px; background:var(--cyan); border-radius:50%; margin-right:.42rem; box-shadow:0 0 12px var(--cyan); }
+        .hero { border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:1.1rem 0 1.25rem; display:flex; align-items:flex-end; justify-content:space-between; gap:2rem; } .kicker,.eyebrow { color:var(--cyan); font:500 .63rem 'DM Mono',monospace; letter-spacing:.15em; text-transform:uppercase; } .hero h1 { font-size:clamp(2.6rem,6vw,5.7rem); line-height:.9; letter-spacing:-.08em; margin:.55rem 0 0; font-weight:800; } .hero h1 span { color:var(--red); } .hero-copy { color:#9aa7b8; max-width:34rem; font-size:.85rem; line-height:1.65; margin:0; }
+        .metrics { display:grid; grid-template-columns:repeat(5,1fr); gap:.65rem; margin:1rem 0; } .metric { position:relative; overflow:hidden; min-height:70px; border:1px solid var(--line); border-radius:15px; background:rgba(17,24,37,.82); padding:.75rem .85rem; } .metric:after { content:''; position:absolute; width:85px; height:85px; right:-36px; top:-42px; border:1px solid rgba(75,224,174,.15); border-radius:50%; } .metric-label { color:#708096; font:500 .56rem 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.1em; } .metric-value { color:#f7fafc; font-size:1.45rem; letter-spacing:-.05em; font-weight:800; margin-top:.2rem; } .cyan { color:var(--cyan); } .red { color:var(--red); } .gold { color:var(--gold); }
+        .notice { color:#c9f8eb; background:rgba(75,224,174,.08); border:1px solid rgba(75,224,174,.26); border-radius:12px; padding:.75rem .9rem; font-size:.76rem; margin:.8rem 0; } .notice.warning { color:#ffe9a8; background:rgba(255,209,102,.08); border-color:rgba(255,209,102,.28); } .notice.danger { color:#ffd0cb; background:rgba(255,120,111,.09); border-color:rgba(255,120,111,.3); }
+        .section-head { display:flex; justify-content:space-between; align-items:flex-end; gap:1rem; margin:1.1rem 0 .55rem; } .section-title { color:#f4f8fb; font-size:1.15rem; letter-spacing:-.04em; font-weight:800; } .section-meta { color:#718096; font:500 .59rem 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.1em; }
+        .arena-shell { border:1px solid rgba(75,224,174,.24); border-radius:22px; background:linear-gradient(145deg,rgba(17,30,43,.96),rgba(9,14,23,.96)); padding:.8rem; box-shadow:0 25px 65px rgba(0,0,0,.24), inset 0 1px rgba(255,255,255,.04); }
+        .arena-top { display:flex; justify-content:space-between; align-items:center; gap:.7rem; padding:.2rem .35rem .75rem; } .arena-label { color:#aaf6df; font:500 .61rem 'DM Mono',monospace; letter-spacing:.13em; } .arena-state { color:#708199; font:500 .58rem 'DM Mono',monospace; letter-spacing:.08em; }
+        .map-grid { display:grid; grid-template-columns:repeat(13,minmax(26px,1fr)); gap:3px; width:100%; aspect-ratio:13/9; background:#05080e; padding:4px; border-radius:16px; border:1px solid rgba(198,218,238,.12); }
+        .map-tile { position:relative; min-width:0; min-height:0; border-radius:5px; display:flex; align-items:center; justify-content:center; overflow:hidden; color:#748398; font:500 .43rem 'DM Mono',monospace; } .map-tile.wall { background:#070a10; border:1px solid rgba(198,218,238,.045); } .map-tile.corridor { background:rgba(116,132,157,.11); border:1px solid rgba(198,218,238,.08); } .map-tile.room-g { background:rgba(75,224,174,.14); border:1px solid rgba(75,224,174,.18); } .map-tile.room-o { background:rgba(255,209,102,.13); border:1px solid rgba(255,209,102,.18); } .map-tile.room-v { background:rgba(255,120,111,.13); border:1px solid rgba(255,120,111,.18); } .map-tile.room-c { background:rgba(169,140,255,.13); border:1px solid rgba(169,140,255,.19); } .map-tile.room-h { background:rgba(97,184,255,.13); border:1px solid rgba(97,184,255,.18); } .map-tile.extraction { background:rgba(75,224,174,.32); border:1px solid rgba(75,224,174,.8); box-shadow:0 0 14px rgba(75,224,174,.22); }
+        .tile-room-code { position:absolute; top:3px; left:4px; opacity:.58; font-size:.37rem; } .tile-marker { color:#c4d0dd; font-size:.75rem; line-height:1; } .tile-marker.cache { color:#ffd166; text-shadow:0 0 10px rgba(255,209,102,.9); animation:pulse 1.7s ease-in-out infinite; } .tile-marker.revealed { color:#fff1b8; } .tile-marker.exit { color:#d4fff0; font-size:.48rem; font-weight:700; } .tile-marker.trap { color:#ff786f; }
+        .token { z-index:2; display:grid; place-items:center; min-width:38px; height:25px; padding:0 .3rem; border-radius:7px; font-size:.43rem; font-weight:800; letter-spacing:.04em; } .token.you { color:#041812; background:var(--cyan); box-shadow:0 0 16px rgba(75,224,174,.8); } .token.rook { color:#260d12; background:var(--red); box-shadow:0 0 16px rgba(255,120,111,.7); } .token.both { background:linear-gradient(90deg,var(--cyan),var(--red)); color:#140b0c; } .token.ghost { opacity:.38; border:1px dashed #a9b8c9; color:#bac8d5; background:rgba(145,162,184,.2); box-shadow:none; }
+        .arena-legend { display:flex; align-items:center; flex-wrap:wrap; gap:.8rem; padding:.7rem .3rem .1rem; color:#718096; font:500 .55rem 'DM Mono',monospace; } .legend-item { display:inline-flex; align-items:center; gap:.3rem; } .legend-swatch { width:9px; height:9px; border-radius:3px; } .legend-swatch.you { background:var(--cyan); } .legend-swatch.rook { background:var(--red); } .legend-swatch.cache { background:var(--gold); } .legend-swatch.exit { background:#aaf6df; }
+        .control-card,.info-card,.screen-card { border:1px solid var(--line); border-radius:18px; background:rgba(17,24,37,.83); padding:1rem; margin-top:.8rem; } .control-card { background:linear-gradient(145deg,rgba(19,38,46,.92),rgba(13,21,31,.9)); } .card-head { display:flex; justify-content:space-between; align-items:center; gap:.6rem; margin-bottom:.75rem; } .card-title { color:#eff7f8; font-weight:800; font-size:.87rem; } .card-tag { color:#7b8ca1; font:500 .55rem 'DM Mono',monospace; letter-spacing:.1em; text-transform:uppercase; }
+        .current-tile { border:1px solid rgba(75,224,174,.22); border-radius:11px; background:rgba(75,224,174,.055); color:#a8f2dc; padding:.6rem .7rem; font:500 .65rem 'DM Mono',monospace; line-height:1.5; margin-bottom:.75rem; } .current-tile strong { color:#effff9; font-size:.72rem; }
+        .movement-caption { color:#718096; font:500 .55rem 'DM Mono',monospace; letter-spacing:.12em; text-align:center; text-transform:uppercase; margin:.55rem 0 .35rem; } .move-row { display:grid; grid-template-columns:repeat(3,1fr); gap:.4rem; margin-bottom:.4rem; }
+        .loadout { display:flex; gap:.38rem; flex-wrap:wrap; } .loadout-chip { color:#cdd9e5; border:1px solid rgba(198,218,238,.15); background:rgba(198,218,238,.06); border-radius:8px; padding:.4rem .5rem; font:500 .56rem 'DM Mono',monospace; } .loadout-chip.hot { color:#061a14; background:var(--cyan); border-color:var(--cyan); }
+        .progress-track { height:7px; border-radius:99px; background:rgba(198,218,238,.1); overflow:hidden; margin-top:.55rem; } .progress-fill { height:100%; border-radius:99px; background:linear-gradient(90deg,var(--red),var(--gold)); }
+        .feed-item { display:flex; gap:.5rem; padding:.55rem 0; border-bottom:1px solid rgba(198,218,238,.08); } .feed-item:last-child { border-bottom:0; } .feed-dot { flex:0 0 auto; width:6px; height:6px; border-radius:50%; margin-top:.32rem; background:#78889c; } .feed-dot.success { background:var(--cyan); box-shadow:0 0 9px var(--cyan); } .feed-dot.danger { background:var(--red); box-shadow:0 0 9px var(--red); } .feed-dot.rival { background:var(--gold); } .feed-dot.player { background:var(--blue); } .feed-message { color:#a5b2c1; font-size:.66rem; line-height:1.45; }
+        .screens-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-end; margin-top:1.4rem; } .screens-copy { color:#7f8da1; font-size:.69rem; line-height:1.4; max-width:31rem; text-align:right; } .screen-card { margin-top:.65rem; padding:.75rem; } .screen-card.you-screen { border-color:rgba(75,224,174,.25); } .screen-card.rook-screen { border-color:rgba(255,120,111,.25); } .screen-heading { display:flex; justify-content:space-between; gap:.6rem; margin-bottom:.55rem; } .screen-heading strong { color:#dffaf1; font:500 .6rem 'DM Mono',monospace; letter-spacing:.12em; } .rook-screen .screen-heading strong { color:#ffd0cb; } .screen-heading span { color:#728198; font:500 .53rem 'DM Mono',monospace; text-transform:uppercase; }
+        .result { border:1px solid rgba(75,224,174,.4); background:linear-gradient(135deg,rgba(75,224,174,.15),rgba(17,28,39,.85)); border-radius:18px; padding:1.1rem 1.2rem; margin:.9rem 0; } .result.loss { border-color:rgba(255,120,111,.4); background:linear-gradient(135deg,rgba(255,120,111,.14),rgba(35,23,33,.85)); } .result-kicker { color:var(--cyan); font:500 .61rem 'DM Mono',monospace; letter-spacing:.13em; } .result.loss .result-kicker { color:var(--red); } .result-title { color:#f7fbfc; font-weight:800; font-size:1.4rem; letter-spacing:-.05em; margin:.25rem 0; } .result-detail { color:#a9b6c5; font-size:.74rem; line-height:1.5; }
+        .footer { color:#526278; text-align:center; padding:1.3rem 0 0; font:500 .55rem 'DM Mono',monospace; letter-spacing:.12em; }
+        .stButton > button { min-height:40px; border-radius:10px; border:1px solid rgba(198,218,238,.18); background:rgba(126,145,170,.08); color:#dce7ef; font:500 .58rem 'DM Mono',monospace; letter-spacing:.06em; transition:.16s ease; } .stButton > button:hover { color:#bcf8e6; border-color:rgba(75,224,174,.65); background:rgba(75,224,174,.11); transform:translateY(-1px); } .control-card .stButton > button { border-color:rgba(75,224,174,.25); background:rgba(75,224,174,.08); } .stButton > button:disabled { opacity:.35; transform:none; }
+        @keyframes pulse { 0%,100% { opacity:.55; transform:scale(.9); } 50% { opacity:1; transform:scale(1.15); } }
+        @media (max-width:900px) { .block-container { padding:1rem .8rem 3rem; } .hero { display:block; } .hero-copy { margin-top:1rem; } .metrics { grid-template-columns:repeat(2,1fr); } .metrics .metric:last-child { grid-column:span 2; } .screens-copy { text-align:left; margin-top:.5rem; } .screens-head { display:block; } .map-grid { gap:2px; padding:3px; } .token { min-width:28px; height:20px; font-size:.34rem; } }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_metric_grid(game: GameState) -> None:
-    integrity = int(game["integrity"])
-    integrity_label = "●" * integrity + "○" * (3 - integrity)
-    st.markdown(
-        f"""
-        <div class="metric-grid">
-            <div class="metric"><div class="metric-label">Operation</div><div class="metric-value cyan">{int(game['round']):02d}<span style="font-size:.8rem;color:#7e8da1;font-weight:500;"> / {MAX_ROUNDS:02d}</span></div></div>
-            <div class="metric"><div class="metric-label">Field score</div><div class="metric-value gold">{int(game['score']):03d}</div></div>
-            <div class="metric"><div class="metric-label">Integrity</div><div class="metric-value coral" style="font-size:1.18rem;letter-spacing:.08em;">{integrity_label}</div></div>
-            <div class="metric"><div class="metric-label">Momentum</div><div class="metric-value cyan">{int(game['momentum'])}<span style="font-size:.8rem;color:#7e8da1;font-weight:500;">%</span></div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def tile_class(location: Coord) -> str:
+    tile = tile_at(location)
+    if location == EXTRACTION:
+        return "map-tile extraction"
+    if tile == "#":
+        return "map-tile wall"
+    if tile == ".":
+        return "map-tile corridor"
+    return f"map-tile room-{tile.lower()}"
+
+
+def tile_marker(game: GameState, location: Coord, perspective: str) -> str:
+    player = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    show_player = perspective == "arena" or perspective == "rival" or location == player
+    show_rival = perspective == "arena" or perspective == "player" or location == rival
+    rival_visible = (
+        perspective == "arena"
+        or perspective == "player" and (int(game["round"]) <= int(game["rival_visible_until"]) or location == cast(Coord, game["rival_last_seen"]))
+        or perspective == "rival" and location == rival
     )
+    player_visible = perspective == "arena" or perspective == "rival" and (
+        grid_distance(player, rival) <= 4 or int(game["round"]) <= int(game["rival_visible_until"])
+    )
+    tokens: List[str] = []
+    if location == player and show_player and (perspective != "rival" or player_visible):
+        tokens.append("<span class='token you'>YOU</span>")
+    if location == rival and show_rival and rival_visible:
+        tokens.append("<span class='token rook'>ROOK</span>")
+    if location == player and location == rival:
+        return "<span class='token both'>CONTACT</span>"
+    if perspective == "player" and location == cast(Coord, game["rival_last_seen"]) and not rival_visible:
+        tokens.append("<span class='token ghost'>SIGNAL</span>")
+    if perspective == "rival" and location == cast(Coord, game["player_last_seen"]) and not player_visible:
+        tokens.append("<span class='token ghost'>LAST</span>")
+    return "".join(tokens)
 
 
-def format_location(location: Location) -> str:
-    """Format a tactical location for compact HUD labels."""
-    return f"{location[0]} / {location[1]}"
-
-
-def render_tactical_board(game: GameState, perspective: str) -> str:
-    """Build one of the two live tactical screens shown in the duel view."""
-    player_location = cast(Location, game["player_location"])
-    rival_location = cast(Location, game["rival_location"])
-    focus_location = player_location if perspective == "player" else rival_location
-    rows: List[str] = []
-    for room_name in ROOM_ORDER:
-        room = ROOMS[room_name]
-        cells: List[str] = []
-        for spot in room["spots"]:
-            spot_name = str(spot["name"])
-            location = (room_name, spot_name)
-            tokens: List[str] = []
-            if location == player_location:
-                token_class = "you" if perspective == "player" else "you ghost"
-                tokens.append(f'<span class="screen-token {token_class}">YOU</span>')
-            if location == rival_location:
-                token_class = "rook" if perspective == "rival" else "rook ghost"
-                tokens.append(f'<span class="screen-token {token_class}">ROOK</span>')
-            active_class = " active" if location == focus_location else ""
+def render_board(game: GameState, perspective: str = "arena") -> str:
+    cells: List[str] = []
+    searched = cast(Set[Coord], game["searched"])
+    traps = cast(Dict[Coord, str], game["traps"])
+    revealed = cast(Set[Coord], game.get("revealed", set()))
+    for y in range(MAP_HEIGHT):
+        for x in range(MAP_WIDTH):
+            location = (x, y)
+            tile = tile_at(location)
+            if tile == "#":
+                cells.append("<div class='map-tile wall'></div>")
+                continue
+            code = escape(tile if tile != "." else "·")
+            marker = ""
+            if location == EXTRACTION:
+                marker = "<span class='tile-marker exit'>EXIT</span>"
+            elif location in traps:
+                marker = "<span class='tile-marker trap'>△</span>"
+            elif location in SEARCH_SPOTS and location not in searched:
+                marker_class = "revealed" if location in revealed else "cache"
+                marker = f"<span class='tile-marker {marker_class}'>◆</span>"
+            else:
+                marker = "<span class='tile-marker'>·</span>"
+            tokens = tile_marker(game, location, perspective)
             cells.append(
-                f'<div class="screen-cell{active_class}">'
-                f'<div class="cell-label">{escape(spot_name)}</div>'
-                f'<div class="screen-token-row">{"".join(tokens)}</div>'
-                "</div>"
+                f"<div class='{tile_class(location)}'><span class='tile-room-code'>{code}</span>{marker}{tokens}</div>"
             )
-        rows.append(
-            f'<div class="screen-row">'
-            f'<div class="screen-wing"><div class="screen-wing-name">{escape(room_name)}</div>'
-            f'<div class="screen-wing-code">{escape(str(room["eyebrow"]))}</div></div>'
-            f'{"".join(cells)}</div>'
-        )
-    focus_label = format_location(focus_location)
-    return f'<div class="screen-board">{"".join(rows)}</div><div class="screen-location">{escape(focus_label)}</div>'
+    return f"<div class='map-grid'>{''.join(cells)}</div>"
 
 
-def render_duel_screen(game: GameState) -> None:
-    """Render the split-screen movement loop for the player and Rook."""
-    player_location = cast(Location, game["player_location"])
-    rival_location = cast(Location, game["rival_location"])
-    st.markdown(
-        """
-        <div class="duel-section">
-            <div class="duel-intro">
-                <div><div class="section-label" style="margin:0 0 .28rem;"><strong>Live tactical feed</strong><span>two screens / one move each</span></div><div class="duel-title">Move through the suite.</div></div>
-                <div class="duel-copy">Use the direction controls to move your operative. Rook moves automatically after every action and hunts the dossier.</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    player_column, rival_column = st.columns(2, gap="medium")
-    with player_column:
-        st.markdown(
-            f'<div class="duel-screen player-screen"><div class="screen-head"><div class="screen-kicker">YOUR SCREEN / MOVEMENT</div><div class="screen-state">STEP {int(game["player_steps"]):02d}</div></div>{render_tactical_board(game, "player")}<div class="position-callout"><strong>YOU ARE HERE</strong><br>{escape(format_location(player_location))}</div></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown('<div class="movement-label">Choose a direction</div>', unsafe_allow_html=True)
-        movement_columns = st.columns(4)
-        movement_labels = {"north": "NORTH ↑", "south": "SOUTH ↓", "west": "WEST ←", "east": "EAST →"}
-        for column, direction in zip(movement_columns, MOVE_DELTAS):
-            with column:
-                _, can_move = move_location(player_location, direction)
-                st.button(
-                    movement_labels[direction],
-                    key=f"move_{direction}",
-                    on_click=move_player,
-                    args=(game, direction),
-                    use_container_width=True,
-                    disabled=bool(game["game_over"]) or not can_move,
-                )
-        st.markdown('<div class="move-hint">Moving consumes one round. Search only when your token is standing on an angle.</div>', unsafe_allow_html=True)
-    with rival_column:
-        st.markdown(
-            f'<div class="duel-screen rival-screen"><div class="screen-head"><div class="screen-kicker">ROOK / OPPONENT SCREEN</div><div class="screen-state">STEP {int(game["rival_steps"]):02d}</div></div>{render_tactical_board(game, "rival")}<div class="position-callout rival-callout"><strong>ROOK SIGNAL</strong><br>{escape(format_location(rival_location))}<br><span style="opacity:.78;">He advances after every player action.</span></div></div>',
-            unsafe_allow_html=True,
-        )
-
-
-def render_room_map(game: GameState) -> None:
-    st.markdown(
-        '<div class="section-label"><strong>Review the suite</strong><span>Move in the live tactical feed</span></div>',
-        unsafe_allow_html=True,
-    )
-    columns = st.columns(3)
-    for column, (room_name, room) in zip(columns, ROOMS.items()):
-        searched_count = sum(1 for location in game["searched"] if location[0] == room_name)
-        selected = room_name == game["selected_room"]
-        with column:
-            selected_class = " selected" if selected else ""
-            st.markdown(
-                f"""
-                <div class="room-card{selected_class}">
-                    <div class="room-glow" style="background:{room['accent']};"></div>
-                    <div class="room-icon" style="color:{room['accent']};">{room['icon']}</div>
-                    <div class="room-eyebrow">{escape(room['eyebrow'])}</div>
-                    <div class="room-name">{escape(room_name)}</div>
-                    <div class="room-subtitle">{escape(room['subtitle'])}</div>
-                    <div class="room-progress">{searched_count} / 3 angles cleared</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.button(
-                "OPEN WING" if not selected else "WING SELECTED",
-                key=f"room_{room_name}",
-                on_click=select_room,
-                args=(room_name,),
-                use_container_width=True,
-                disabled=game["game_over"],
-            )
-
-
-def render_selected_room(game: GameState) -> None:
-    room_name = str(game["selected_room"])
-    room = ROOMS[room_name]
-    player_location = cast(Location, game["player_location"])
-    player_room = player_location[0]
-    is_player_room = room_name == player_room
+def render_metrics(game: GameState) -> None:
+    integrity = int(game["integrity"])
+    health = "●" * integrity + "○" * (3 - integrity)
+    objective = "EXTRACT" if bool(game["carrying"]) else "LOCATE"
     st.markdown(
         f"""
-        <div class="room-panel">
-            <div class="room-panel-head">
-                <div>
-                    <div class="section-label" style="margin:0 0 .35rem;"><strong>{escape(room['eyebrow'])}</strong><span>{escape(room['subtitle'])}</span></div>
-                    <div class="room-panel-title">{escape(room_name)}</div>
-                    <div class="room-panel-copy">{escape(room['description'])}</div>
-                </div>
-                <div class="scan-chip">{'YOU ARE HERE' if is_player_room else 'REMOTE VIEW'} · {int(game['clue_tokens'])} SCAN{'S' if game['clue_tokens'] != 1 else ''}</div>
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if not game["game_over"]:
-        scan_column, _ = st.columns([1, 2.6])
-        with scan_column:
-            st.button(
-                "SCAN THIS WING",
-                key=f"scan_{room_name}",
-                on_click=scout_room,
-                args=(game, room_name),
-                use_container_width=True,
-                disabled=game["clue_tokens"] <= 0 or not is_player_room,
-            )
-
-    for spot in room["spots"]:
-        spot_name = str(spot["name"])
-        location = (room_name, spot_name)
-        searched = location in game["searched"]
-        player_trap = game["traps"].get(location) == "player"
-        is_current = location == player_location
-        status = "YOU ARE HERE" if is_current else ("CLEARED" if searched else ("RIGGED" if player_trap else "UNREAD"))
-        status_color = "#50e3bb" if is_current or searched or player_trap else "#8292a7"
-        st.markdown(
-            f"""
-            <div class="spot-row">
-                <div>
-                    <div class="spot-name">{escape(spot_name)}</div>
-                    <div class="spot-detail">{escape(spot['detail'])}</div>
-                </div>
-                <div class="spot-status" style="color:{status_color};">{status}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        search_column, rig_column = st.columns([1, 1])
-        with search_column:
-            st.button(
-                "SEARCH ANGLE",
-                key=f"search_{room_name}_{spot_name}",
-                on_click=search_location,
-                args=(game, room_name, spot_name),
-                use_container_width=True,
-                disabled=searched or game["game_over"] or not is_current,
-            )
-        with rig_column:
-            st.button(
-                "RIG TRIPWIRE",
-                key=f"rig_{room_name}_{spot_name}",
-                on_click=rig_trap,
-                args=(game, room_name, spot_name),
-                use_container_width=True,
-                disabled=(
-                    searched
-                    or game["game_over"]
-                    or not is_current
-                    or location in game["traps"]
-                    or not has_item(game, "Wire clip")
-                ),
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_rival_card(game: GameState) -> None:
-    progress = int(game["rival_progress"])
-    alert = int(game["rival_alert"])
-    st.markdown(
-        f"""
-        <div class="side-card rival">
-            <div class="section-label"><strong>Adversary signal</strong><span style="color:#ff938a;">LIVE</span></div>
-            <div class="agent-row">
-                <div class="agent-avatar">◒</div>
-                <div><div class="agent-name">Rook</div><div class="agent-role">UNAFFILIATED / SILENT RUNNER</div></div>
-            </div>
-            <div class="progress-shell"><div class="progress-fill" style="width:{progress}%;"></div></div>
-            <div style="display:flex;justify-content:space-between;color:#aa8e9d;font-family:'DM Mono',monospace;font-size:.6rem;margin-top:.45rem;"><span>DOSSIER READ</span><span>{progress}%</span></div>
-            <div style="color:#a98b9c;font-size:.72rem;line-height:1.5;margin-top:1rem;">Rook's alert level: <strong style="color:#ffd166;">{'▰' * alert}{'▱' * (5-alert)}</strong></div>
+        <div class='metrics'>
+            <div class='metric'><div class='metric-label'>Turn</div><div class='metric-value cyan'>{int(game['round']):02d}<span style='font-size:.7rem;color:#75849a;'> / {MAX_ROUNDS:02d}</span></div></div>
+            <div class='metric'><div class='metric-label'>Score</div><div class='metric-value gold'>{int(game['score']):03d}</div></div>
+            <div class='metric'><div class='metric-label'>Integrity</div><div class='metric-value red' style='font-size:1.05rem;letter-spacing:.09em;'>{health}</div></div>
+            <div class='metric'><div class='metric-label'>Scans</div><div class='metric-value'>{int(game['scans'])}</div></div>
+            <div class='metric'><div class='metric-label'>Objective</div><div class='metric-value cyan' style='font-size:1.05rem;'>{objective}</div></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_loadout(game: GameState) -> None:
-    inventory: List[str] = game["inventory"]
+def render_event(game: GameState) -> None:
+    message = str(game["last_action"])
+    tone = ""
+    lowered = message.lower()
+    if "contact" in lowered or "integrity" in lowered or "rook secured" in lowered:
+        tone = "danger"
+    elif "wall" in lowered or "already" in lowered or "cannot" in lowered:
+        tone = "warning"
+    st.markdown(f"<div class='notice {tone}'><strong>FIELD EVENT</strong>&nbsp;&nbsp; {escape(message)}</div>", unsafe_allow_html=True)
+
+
+def render_arena(game: GameState) -> None:
+    player = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    st.markdown(
+        f"""
+        <div class='section-head'><div><div class='eyebrow'>Top-down arena</div><div class='section-title'>The safehouse is live.</div></div><div class='section-meta'>{room_short(player)} / YOU {player[0] + 1},{player[1] + 1}</div></div>
+        <div class='arena-shell'>
+            <div class='arena-top'><div class='arena-label'>LIVE FLOOR PLAN · ALL MOVEMENT IS TURN-BASED</div><div class='arena-state'>ROOK {rival[0] + 1},{rival[1] + 1}</div></div>
+            {render_board(game, 'arena')}
+            <div class='arena-legend'><span class='legend-item'><span class='legend-swatch you'></span>YOU</span><span class='legend-item'><span class='legend-swatch rook'></span>ROOK</span><span class='legend-item'><span class='legend-swatch cache'></span>SEARCH CACHE</span><span class='legend-item'><span class='legend-swatch exit'></span>EXTRACTION</span><span class='legend-item' style='margin-left:auto;'>◆ SEARCH · △ TRAP · EXIT = {EXTRACTION[0] + 1},{EXTRACTION[1] + 1}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def action_rerun(action: Any, game: GameState) -> None:
+    action(game)
+    st.rerun()
+
+
+def render_controls(game: GameState) -> None:
+    player = cast(Coord, game["player"])
+    current_payload = cast(Dict[Coord, Payload], game["hidden"]).get(player)
+    if current_payload and player not in game["searched"]:
+        tile_state = f"<strong>◆ CACHE SIGNAL</strong><br>{escape(current_payload['detail'])}"
+    elif player == EXTRACTION:
+        tile_state = "<strong>EXTRACTION LIFT</strong><br>Reach this tile while carrying the Prism dossier."
+    else:
+        tile_state = f"<strong>{escape(room_name(player).upper())}</strong><br>Tile {player[0] + 1},{player[1] + 1} · Search for hidden caches."
+    wire_ready = has_item(game, "Wire clip")
+    smoke_ready = has_item(game, "Smoke capsule")
+    decoy_ready = has_item(game, "Holo decoy")
+    st.markdown(
+        f"""
+        <div class='control-card'>
+            <div class='card-head'><div class='card-title'>Your controls</div><div class='card-tag'>one action = one rook response</div></div>
+            <div class='current-tile'>{tile_state}</div>
+            <div class='movement-caption'>Move your operative</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    disabled = bool(game["game_over"])
+    top_left, top_mid, top_right = st.columns(3)
+    with top_mid:
+        if st.button("NORTH  ↑", key="move_north", use_container_width=True, disabled=disabled or not is_walkable((player[0], player[1] - 1))):
+            action_rerun(lambda current: move_player(current, "north"), game)
+    left, center, right = st.columns(3)
+    with left:
+        if st.button("WEST  ←", key="move_west", use_container_width=True, disabled=disabled or not is_walkable((player[0] - 1, player[1]))):
+            action_rerun(lambda current: move_player(current, "west"), game)
+    with center:
+        if st.button("SEARCH  ◆", key="search_current", use_container_width=True, disabled=disabled or player in game["searched"]):
+            action_rerun(search_current, game)
+    with right:
+        if st.button("EAST  →", key="move_east", use_container_width=True, disabled=disabled or not is_walkable((player[0] + 1, player[1]))):
+            action_rerun(lambda current: move_player(current, "east"), game)
+    _, bottom_mid, _ = st.columns(3)
+    with bottom_mid:
+        if st.button("SOUTH  ↓", key="move_south", use_container_width=True, disabled=disabled or not is_walkable((player[0], player[1] + 1))):
+            action_rerun(lambda current: move_player(current, "south"), game)
+    st.markdown("<div class='movement-caption' style='margin-top:.8rem;'>Gadgets and intel</div>", unsafe_allow_html=True)
+    gadget_columns = st.columns(4)
+    with gadget_columns[0]:
+        if st.button(f"SCAN  [{int(game['scans'])}]", key="scan_area", use_container_width=True, disabled=disabled or int(game["scans"]) <= 0):
+            action_rerun(scan_area, game)
+    with gadget_columns[1]:
+        if st.button("TRIPWIRE", key="rig_trap", use_container_width=True, disabled=disabled or not wire_ready):
+            action_rerun(rig_trap, game)
+    with gadget_columns[2]:
+        if st.button("SMOKE", key="use_smoke", use_container_width=True, disabled=disabled or not smoke_ready):
+            action_rerun(use_smoke, game)
+    with gadget_columns[3]:
+        if st.button("DECOY", key="use_decoy", use_container_width=True, disabled=disabled or not decoy_ready):
+            action_rerun(use_decoy, game)
+
+
+def render_status(game: GameState) -> None:
+    player = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    distance = grid_distance(player, rival)
+    progress = max(5, min(95, 100 - grid_distance(rival, cast(Coord, game["dossier_location"])) * 7))
+    objective_text = "CARRY TO EXTRACTION" if bool(game["carrying"]) else "FIND THE DOSSIER"
+    inventory = cast(List[str], game["inventory"])
     chips = "".join(
-        f'<span class="loadout-chip {"hot" if item == "Prism dossier" else ""}">{escape(item)}</span>'
-        for item in inventory
-    )
-    if not chips:
-        chips = '<span style="color:#718198;font-family:\'DM Mono\',monospace;font-size:.64rem;">EMPTY / KEEP MOVING</span>'
+        f"<span class='loadout-chip'>{escape(item)}</span>" for item in inventory
+    ) or "<span style=\"color:#718096;font:500 .58rem 'DM Mono',monospace;\">EMPTY LOADOUT</span>"
     st.markdown(
         f"""
-        <div class="side-card">
-            <div class="section-label"><strong>Loadout</strong><span>{len(inventory)} recovered</span></div>
-            <div class="loadout">{chips}</div>
-            <div style="color:#74859c;font-size:.69rem;line-height:1.5;margin-top:.8rem;">Wire clips rig tripwires. Smoke capsules soften a bad hit. The dossier is the only way out.</div>
+        <div class='info-card'>
+            <div class='card-head'><div class='card-title'>Mission status</div><div class='card-tag'>{objective_text}</div></div>
+            <div style='color:#9eabba;font-size:.7rem;line-height:1.5;'>Extraction lift: <strong style='color:#dffaf1;'>tile {EXTRACTION[0] + 1},{EXTRACTION[1] + 1}</strong><br>Current position: <strong style='color:#dffaf1;'>{escape(format_location(player))}</strong></div>
+            <div style='display:flex;justify-content:space-between;margin-top:.9rem;color:#7b8ba0;font:500 .55rem "DM Mono",monospace;'><span>ROOK HUNT SIGNAL</span><span>{progress}%</span></div>
+            <div class='progress-track'><div class='progress-fill' style='width:{progress}%;'></div></div>
+            <div style='color:#8d9bae;font-size:.68rem;line-height:1.5;margin-top:.75rem;'>Rook is <strong style='color:#ffd166;'>{distance} steps</strong> from your position. {"He has your trail." if distance <= 4 else "Your trail is currently cold."}</div>
+        </div>
+        <div class='info-card'>
+            <div class='card-head'><div class='card-title'>Loadout</div><div class='card-tag'>{len(inventory)} recovered</div></div>
+            <div class='loadout'>{chips}</div>
+            {"<div class='loadout' style='margin-top:.4rem;'><span class='loadout-chip hot'>PRISM DOSSIER</span></div>" if game['carrying'] else ""}
         </div>
         """,
         unsafe_allow_html=True,
@@ -845,119 +686,104 @@ def render_loadout(game: GameState) -> None:
 
 
 def render_feed(game: GameState) -> None:
-    items: List[Dict[str, str]] = game["feed"]
+    items = cast(List[Dict[str, str]], game["feed"])
     feed_markup = "".join(
-        f"<div class='feed-item'><div class='feed-dot {escape(item['kind'])}'></div><div class='feed-message'>{escape(item['message'])}</div></div>"
-        for item in items[:6]
+        f"<div class='feed-item'><span class='feed-dot {escape(item['tone'])}'></span><span class='feed-message'>{escape(item['message'])}</span></div>"
+        for item in items[:7]
     )
     st.markdown(
-        f"""
-        <div class="side-card">
-            <div class="section-label"><strong>Field feed</strong><span>encrypted</span></div>
-            {feed_markup}
-        </div>
+        f"<div class='info-card'><div class='card-head'><div class='card-title'>Live event feed</div><div class='card-tag'>encrypted</div></div>{feed_markup}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_double_screen(game: GameState) -> None:
+    st.markdown(
+        """
+        <div class='screens-head'><div><div class='eyebrow'>Two-screen duel</div><div class='section-title'>Your view vs. Rook's view.</div></div><div class='screens-copy'>The arena above shows the truth. These two smaller screens show what each operative can currently see.</div></div>
         """,
         unsafe_allow_html=True,
     )
-
-
-def render_clues(game: GameState) -> None:
-    clues: List[str] = game["clues"]
-    if not clues:
-        return
-    markup = "".join(f'<div class="clue">{escape(clue)}</div>' for clue in clues[:3])
-    st.markdown(
-        f"<div class='section-label'><strong>Intercepted intel</strong><span>{len(clues)} note{'s' if len(clues) != 1 else ''}</span></div>{markup}",
-        unsafe_allow_html=True,
-    )
-
-
-def render_sidebar(game: GameState) -> None:
-    with st.sidebar:
+    player = cast(Coord, game["player"])
+    rival = cast(Coord, game["rival"])
+    left, right = st.columns(2, gap="medium")
+    with left:
+        rival_known = int(game["round"]) <= int(game["rival_visible_until"]) or grid_distance(player, rival) <= 4
         st.markdown(
-            """
-            <div class="brand-left" style="margin-bottom:1.2rem;">
-                <div class="brand-mark" style="width:36px;height:36px;border-radius:12px;font-size:1.1rem;">◈</div>
-                <div><div class="brand-name" style="font-size:.78rem;">CIPHER CLASH</div><div class="brand-sub">FIELD MANUAL / 01</div></div>
-            </div>
-            <div class="section-label"><strong>How to play</strong><span>briefing</span></div>
-            <div style="color:#9aa8bb;font-size:.75rem;line-height:1.7;">
-                Use the two live screens to move north, south, east, or west. Search the angle you occupy, then survive Rook's automatic response. Recover tools to rig danger and spend scans when the room feels too quiet.
-            </div>
-            <div style="height:1px;background:rgba(168,191,219,.14);margin:1.2rem 0;"></div>
-            <div class="section-label"><strong>Win condition</strong><span>prism</span></div>
-            <div style="color:#d7e3ec;font-size:.75rem;line-height:1.65;">Find the Prism dossier before the 12-round window closes. Three trap hits compromise the operation.</div>
-            <div style="height:1px;background:rgba(168,191,219,.14);margin:1.2rem 0;"></div>
-            <div class="section-label"><strong>Design note</strong><span>original</span></div>
-            <div style="color:#77889e;font-size:.69rem;line-height:1.6;">A new, original spy-fi duel: no borrowed names, characters, or art. Just pressure, misdirection, and one clean exit.</div>
-            """,
+            f"<div class='screen-card you-screen'><div class='screen-heading'><strong>YOUR SCREEN / FIELD VIEW</strong><span>{'ROOK VISIBLE' if rival_known else 'SIGNAL LOST'}</span></div>{render_board(game, 'player')}</div>",
             unsafe_allow_html=True,
         )
-        st.markdown("<div style='height:.7rem'></div>", unsafe_allow_html=True)
-        st.button("RESET OPERATION", key="reset_sidebar", on_click=lambda: st.session_state.update(game=create_game()), use_container_width=True)
+    with right:
+        player_known = grid_distance(player, rival) <= 4 or int(game["round"]) <= int(game["rival_visible_until"])
+        st.markdown(
+            f"<div class='screen-card rook-screen'><div class='screen-heading'><strong>ROOK / OPPONENT VIEW</strong><span>{'YOUR TRAIL HOT' if player_known else 'TRAIL COLD'}</span></div>{render_board(game, 'rival')}</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def render_result(game: GameState) -> None:
     result: Optional[Dict[str, Any]] = game.get("result")
     if not result:
         return
-    result_class = "" if result["won"] else " loss"
-    kicker = "OPERATION COMPLETE" if result["won"] else "OPERATION LOST"
+    result_class = "" if bool(result["won"]) else " loss"
+    kicker = "OPERATION COMPLETE" if bool(result["won"]) else "OPERATION LOST"
     st.markdown(
-        f"""
-        <div class="result-card{result_class}">
-            <div class="result-kicker">{kicker}</div>
-            <div class="result-title">{escape(str(result['title']))}</div>
-            <div class="result-copy">{escape(str(result['detail']))}</div>
-        </div>
-        """,
+        f"<div class='result{result_class}'><div class='result-kicker'>{kicker}</div><div class='result-title'>{escape(result['title'])}</div><div class='result-detail'>{escape(result['detail'])}</div></div>",
         unsafe_allow_html=True,
     )
-    st.button("START A FRESH OPERATION", key="reset_result", on_click=lambda: st.session_state.update(game=create_game()), use_container_width=True)
+    if st.button("RESET ARENA", key="reset_result", use_container_width=True):
+        reset_game()
+        st.rerun()
+
+
+def render_sidebar(game: GameState) -> None:
+    with st.sidebar:
+        st.markdown(
+            """
+            <div class='brand' style='margin-bottom:1.1rem;'><div class='brand-mark' style='width:36px;height:36px;border-radius:11px;font-size:1rem;'>◈</div><div><div class='brand-name' style='font-size:.72rem;'>CIPHER CLASH</div><div class='brand-sub'>FIELD MANUAL / 02</div></div></div>
+            <div class='eyebrow'>How to play</div>
+            <div style='color:#9aa7b8;font-size:.72rem;line-height:1.7;margin-top:.45rem;'>Move one tile at a time with the directional pad. Search the glowing ◆ caches. Rook takes his own turn after every action.</div>
+            <div style='height:1px;background:rgba(198,218,238,.14);margin:1rem 0;'></div>
+            <div class='eyebrow'>Win condition</div>
+            <div style='color:#d8e5ed;font-size:.72rem;line-height:1.65;margin-top:.45rem;'>Find the Prism dossier, then walk it to the cyan EXIT tile. Three contact hits or a 24-turn clock ends the operation.</div>
+            <div style='height:1px;background:rgba(198,218,238,.14);margin:1rem 0;'></div>
+            <div class='eyebrow'>Map legend</div>
+            <div style='color:#9aa7b8;font-size:.7rem;line-height:1.8;margin-top:.45rem;'>◆ cache &nbsp; △ tripwire<br>YOU = cyan &nbsp; ROOK = red<br>Letters identify each wing.</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
+        if st.button("RESET OPERATION", key="reset_sidebar", use_container_width=True):
+            reset_game()
+            st.rerun()
 
 
 def main() -> None:
-    st.set_page_config(page_title="Cipher Clash", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title=APP_NAME, page_icon="◈", layout="wide", initial_sidebar_state="expanded")
     render_styles()
     game = ensure_game()
     render_sidebar(game)
-
     st.markdown(
         """
-        <div class="brand-row">
-            <div class="brand-left"><div class="brand-mark">◈</div><div><div class="brand-name">Cipher Clash</div><div class="brand-sub">A high-pressure espionage duel</div></div></div>
-            <div class="status-pill"><span class="status-dot"></span>SUITE 06 / SIGNAL LIVE</div>
-        </div>
-        <div class="hero">
-            <div><div class="hero-kicker">Operation 06 · The Prism Relay</div><h1 class="hero-title">Stay sharp.<br><span>Leave no trace.</span></h1></div>
-            <p class="hero-copy">Two operatives. Three wings. One dossier hidden in plain sight. Move through the live suite, search the angle beneath your token, and outmaneuver Rook before he reaches the file.</p>
-        </div>
+        <div class='topbar'><div class='brand'><div class='brand-mark'>◈</div><div><div class='brand-name'>Cipher Clash</div><div class='brand-sub'>A turn-based safehouse duel</div></div></div><div class='live-pill'><span class='live-dot'></span>ARENA LIVE / 24 TURN WINDOW</div></div>
+        <div class='hero'><div><div class='kicker'>Operation 02 · Prism Relay</div><h1>Move smart.<br><span>Stay unseen.</span></h1></div><p class='hero-copy'>A real playable top-down duel: navigate the safehouse, search caches, deploy gadgets, and beat the rival agent to the extraction lift.</p></div>
         """,
         unsafe_allow_html=True,
     )
-
-    if not game["game_over"]:
-        flash_kind = ""
-        last_action = str(game["last_action"])
-        if "Integrity" in last_action or "tripwire" in last_action.lower() and "disarmed" not in last_action.lower():
-            flash_kind = "danger" if "Integrity" in last_action else "warning"
-        st.markdown(f'<div class="flash {flash_kind}"><strong>FIELD NOTE</strong>&nbsp;&nbsp; {escape(last_action)}</div>', unsafe_allow_html=True)
-    else:
+    if game["game_over"]:
         render_result(game)
-
-    render_metric_grid(game)
-    render_duel_screen(game)
-    left_column, right_column = st.columns([1.7, 1], gap="large")
-    with left_column:
-        render_room_map(game)
-        render_selected_room(game)
-        render_clues(game)
-    with right_column:
-        render_rival_card(game)
-        render_loadout(game)
+    else:
+        render_event(game)
+    render_metrics(game)
+    left, right = st.columns([1.65, 1], gap="large")
+    with left:
+        render_arena(game)
+        render_controls(game)
+    with right:
+        render_status(game)
         render_feed(game)
-
-    st.markdown('<div class="footer-line">CIPHER CLASH · ORIGINAL FIELD SIMULATION · PRESSURE MAKES THE PATTERN</div>', unsafe_allow_html=True)
+    render_double_screen(game)
+    st.markdown("<div class='footer'>CIPHER CLASH · ORIGINAL SPY-FI ARENA · MAKE THE NEXT MOVE COUNT</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
