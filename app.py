@@ -228,6 +228,7 @@ GAME_HTML = r"""
     <canvas id="cc-canvas" width="900" height="620"></canvas>
 
     <div id="cc-icons">
+      <button id="cc-btn-mute" title="Sound">🔊</button>
       <button id="cc-btn-fs" title="Fullscreen">⛶</button>
       <button id="cc-btn-restart2" title="Restart chapter">⟲</button>
     </div>
@@ -272,7 +273,7 @@ GAME_HTML = r"""
           <b>Agent Cyan</b>: <span class="cc-key">W</span><span class="cc-key">A</span><span class="cc-key">S</span><span class="cc-key">D</span> move, <span class="cc-key">SPACE</span> rig console<br>
           <b>Agent Magenta</b> (2P): <span class="cc-key">←</span><span class="cc-key">↑</span><span class="cc-key">↓</span><span class="cc-key">→</span> move, <span class="cc-key">ENTER</span> rig console<br>
           <b>Touch devices</b>: on-screen stick moves you, RIG button sabotages consoles. 2P Skirmish needs a physical keyboard.<br>
-          Tap <b>⛶</b> in the top-right corner of the game to play fullscreen.
+          Tap <b>⛶</b> in the top-right corner of the game to play fullscreen. Tap <b>🔊</b> to mute/unmute sound effects.
         </div>
       </div>
     </div>
@@ -298,6 +299,7 @@ GAME_HTML = r"""
     const btn2P = root.querySelector('#cc-btn-2p');
     const btnFs = root.querySelector('#cc-btn-fs');
     const btnRestart2 = root.querySelector('#cc-btn-restart2');
+    const btnMute = root.querySelector('#cc-btn-mute');
     const barP1 = root.querySelector('#cc-bar-p1');
     const barP2 = root.querySelector('#cc-bar-p2');
     const trapsP1El = root.querySelector('#cc-traps-p1');
@@ -325,6 +327,74 @@ GAME_HTML = r"""
       try{ localStorage.setItem('cc_max_chapter', String(v)); }catch(e){}
     }
     let maxChapterReached = loadProgress();
+
+    // ---------- SOUND (synthesized, no audio files) ----------
+    function loadSoundPref(){
+      try{ const v = localStorage.getItem('cc_sound_on'); return v===null ? true : v==='1'; }
+      catch(e){ return true; }
+    }
+    function saveSoundPref(v){ try{ localStorage.setItem('cc_sound_on', v?'1':'0'); }catch(e){} }
+    let soundOn = loadSoundPref();
+    let actx = null;
+    function ensureAudio(){
+      if(actx) return actx;
+      try{ actx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ actx = null; }
+      return actx;
+    }
+    function tone(freq, dur, type, vol, sweepTo){
+      if(!soundOn) return;
+      const ac = ensureAudio(); if(!ac) return;
+      if(ac.state === 'suspended') ac.resume();
+      const t0 = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      if(sweepTo) osc.frequency.exponentialRampToValueAtTime(Math.max(20,sweepTo), t0+dur);
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(vol||0.2, t0+0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0+dur);
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.start(t0); osc.stop(t0+dur+0.03);
+    }
+    function noiseBurst(dur, vol, filterFreq){
+      if(!soundOn) return;
+      const ac = ensureAudio(); if(!ac) return;
+      if(ac.state === 'suspended') ac.resume();
+      const t0 = ac.currentTime;
+      const bufferSize = Math.max(1, Math.floor(ac.sampleRate*dur));
+      const buffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
+      const data = buffer.getChannelData(0);
+      for(let i=0;i<bufferSize;i++){ data[i] = (Math.random()*2-1) * (1 - i/bufferSize); }
+      const src = ac.createBufferSource();
+      src.buffer = buffer;
+      const filter = ac.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(filterFreq||1800, t0);
+      const gain = ac.createGain();
+      gain.gain.setValueAtTime(vol||0.3, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0+dur);
+      src.connect(filter); filter.connect(gain); gain.connect(ac.destination);
+      src.start(t0);
+    }
+    const sfx = {
+      click(){ tone(520, 0.06, 'square', 0.10); },
+      pickup(){ tone(660, 0.09, 'triangle', 0.18, 1100); },
+      rig(){ tone(220, 0.10, 'square', 0.15, 340); },
+      zap(){ tone(900, 0.16, 'sawtooth', 0.20, 80); },
+      explosion(){ noiseBurst(0.4, 0.32, 1200); },
+      chapterStart(){ tone(440, 0.10, 'triangle', 0.15); setTimeout(()=>tone(660, 0.15, 'triangle', 0.15), 100); },
+      win(){ tone(523, 0.12, 'triangle', 0.22); setTimeout(()=>tone(659, 0.12, 'triangle', 0.22), 120); setTimeout(()=>tone(784, 0.24, 'triangle', 0.22), 240); },
+      lose(){ tone(300, 0.18, 'sawtooth', 0.20, 120); setTimeout(()=>tone(220, 0.28, 'sawtooth', 0.18, 80), 150); },
+    };
+    function updateMuteIcon(){ btnMute.textContent = soundOn ? '🔊' : '🔇'; }
+    btnMute.addEventListener('click', ()=>{
+      soundOn = !soundOn;
+      saveSoundPref(soundOn);
+      updateMuteIcon();
+      if(soundOn) sfx.click();
+    });
+    updateMuteIcon();
 
     // ---------- SEEDED RNG ----------
     function mulberry32(seed){
@@ -510,6 +580,7 @@ GAME_HTML = r"""
       resetEntities('campaign');
       loadLevel(chapter, false);
       toast(('CHAPTER ' + chapter + ' — INFILTRATION BEGINS'));
+      sfx.chapterStart();
       updateHUD();
     }
     function startSkirmish(){
@@ -549,6 +620,7 @@ GAME_HTML = r"""
         best.rigged = player.id;
         spawnSparks(best.x,best.y,player.color,10);
         toast((player.id==='p1'?"CYAN":"MAGENTA")+" rigged a console");
+        sfx.rig();
       }
     }
 
@@ -723,6 +795,7 @@ GAME_HTML = r"""
           player.shardCount++;
           spawnSparks(s.x,s.y,'#ffcc33',16);
           toast((player.id==='p1'?"CYAN":(mode==='campaign'?"RIVAL":"MAGENTA"))+" acquired a data shard ("+player.shardCount+"/"+shardsNeeded+")");
+          sfx.pickup();
         }
       }
     }
@@ -738,6 +811,8 @@ GAME_HTML = r"""
             player.vx = Math.cos(ang)*260; player.vy = Math.sin(ang)*260;
             spawnExplosion(c.x,c.y);
             toast((player.id==='p1'?"CYAN":(mode==='campaign'?"RIVAL":"MAGENTA"))+" got zapped!");
+            sfx.zap();
+            sfx.explosion();
           }
         }
       }
@@ -771,9 +846,9 @@ GAME_HTML = r"""
       overlay.classList.remove('hidden');
     }
     function wireMenuButtons(){
-      root.querySelector('#cc-btn-campaign').addEventListener('click', ()=>startCampaign(maxChapterReached));
-      root.querySelector('#cc-btn-chapters').addEventListener('click', showChapterSelect);
-      root.querySelector('#cc-btn-2p').addEventListener('click', startSkirmish);
+      root.querySelector('#cc-btn-campaign').addEventListener('click', ()=>{ sfx.click(); startCampaign(maxChapterReached); });
+      root.querySelector('#cc-btn-chapters').addEventListener('click', ()=>{ sfx.click(); showChapterSelect(); });
+      root.querySelector('#cc-btn-2p').addEventListener('click', ()=>{ sfx.click(); startSkirmish(); });
     }
     function showChapterSelect(){
       let grid = '<div class="cc-chapgrid">';
@@ -787,9 +862,9 @@ GAME_HTML = r"""
         grid +
         '<div class="cc-row"><button class="cc-btn mg" id="cc-btn-back">Back</button></div>';
       panelMenu.querySelectorAll('.cc-chapbtn.unlocked').forEach(b=>{
-        b.addEventListener('click', ()=> startCampaign(parseInt(b.getAttribute('data-ch'),10)) );
+        b.addEventListener('click', ()=>{ sfx.click(); startCampaign(parseInt(b.getAttribute('data-ch'),10)); });
       });
-      root.querySelector('#cc-btn-back').addEventListener('click', backToMenu);
+      root.querySelector('#cc-btn-back').addEventListener('click', ()=>{ sfx.click(); backToMenu(); });
     }
     function showWin(){
       hud.style.display='none';
@@ -797,6 +872,7 @@ GAME_HTML = r"""
       overlay.classList.remove('hidden');
       if(mode==='campaign'){
         if(winner==='p1'){
+          sfx.win();
           maxChapterReached = Math.max(maxChapterReached, currentChapter+1 > TOTAL_CHAPTERS ? TOTAL_CHAPTERS : currentChapter+1);
           saveProgress(maxChapterReached);
           const finished = currentChapter >= TOTAL_CHAPTERS;
@@ -809,11 +885,12 @@ GAME_HTML = r"""
               '<button class="cc-btn mg" id="cc-btn-menu">Main Menu</button>' +
             '</div>';
           if(!finished){
-            root.querySelector('#cc-btn-next').addEventListener('click', ()=>startCampaign(currentChapter+1));
+            root.querySelector('#cc-btn-next').addEventListener('click', ()=>{ sfx.click(); startCampaign(currentChapter+1); });
           }
-          root.querySelector('#cc-btn-replay').addEventListener('click', ()=>startCampaign(currentChapter));
-          root.querySelector('#cc-btn-menu').addEventListener('click', backToMenu);
+          root.querySelector('#cc-btn-replay').addEventListener('click', ()=>{ sfx.click(); startCampaign(currentChapter); });
+          root.querySelector('#cc-btn-menu').addEventListener('click', ()=>{ sfx.click(); backToMenu(); });
         } else {
+          sfx.lose();
           panelMenu.innerHTML =
             '<div class="cc-title" style="font-size:clamp(20px,5vw,34px)">CHAPTER FAILED</div>' +
             '<div class="cc-winline" style="color:var(--mg)">The rival A.I. extracted first</div>' +
@@ -821,10 +898,11 @@ GAME_HTML = r"""
               '<button class="cc-btn" id="cc-btn-retry">Retry Chapter</button>' +
               '<button class="cc-btn mg" id="cc-btn-menu">Main Menu</button>' +
             '</div>';
-          root.querySelector('#cc-btn-retry').addEventListener('click', ()=>startCampaign(currentChapter));
-          root.querySelector('#cc-btn-menu').addEventListener('click', backToMenu);
+          root.querySelector('#cc-btn-retry').addEventListener('click', ()=>{ sfx.click(); startCampaign(currentChapter); });
+          root.querySelector('#cc-btn-menu').addEventListener('click', ()=>{ sfx.click(); backToMenu(); });
         }
       } else {
+        sfx.win();
         const who = winner==='p1' ? 'AGENT CYAN' : 'AGENT MAGENTA';
         panelMenu.innerHTML =
           '<div class="cc-title" style="font-size:clamp(20px,5vw,34px)">MISSION COMPLETE</div>' +
@@ -833,8 +911,8 @@ GAME_HTML = r"""
             '<button class="cc-btn" id="cc-btn-again">Play Again</button>' +
             '<button class="cc-btn mg" id="cc-btn-menu">Main Menu</button>' +
           '</div>';
-        root.querySelector('#cc-btn-again').addEventListener('click', startSkirmish);
-        root.querySelector('#cc-btn-menu').addEventListener('click', backToMenu);
+        root.querySelector('#cc-btn-again').addEventListener('click', ()=>{ sfx.click(); startSkirmish(); });
+        root.querySelector('#cc-btn-menu').addEventListener('click', ()=>{ sfx.click(); backToMenu(); });
       }
     }
 
@@ -1031,6 +1109,7 @@ GAME_HTML = r"""
     btnFs.addEventListener('click', toggleFullscreen);
     btnRestart2.addEventListener('click', ()=>{
       if(!mode) return;
+      sfx.click();
       if(mode==='campaign') startCampaign(currentChapter);
       else startSkirmish();
     });
@@ -1061,6 +1140,9 @@ with st.expander("How to play"):
   tap **RIG** on touch. It only zaps the *other* agent.
 - **Fullscreen:** tap the ⛶ icon in the top-right of the game to expand to fullscreen
   on desktop or mobile; press `Esc` or tap it again to exit.
+- **Sound:** tap the 🔊 icon to mute/unmute. All sound effects are synthesized live
+  in-browser (no audio files) — shard pickups, console rigs, zaps/explosions, and
+  win/lose stingers. Your mute preference is remembered.
         """
     )
 
